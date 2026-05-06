@@ -28,6 +28,10 @@ describe("real camera onboarding step", () => {
       detectForVideo: () => ({ detections: mediaPipeMock.detections })
     });
     mediaPipeMock.forVisionTasks.mockClear();
+    Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+      configurable: true,
+      value: HTMLMediaElement.HAVE_CURRENT_DATA
+    });
   });
 
   afterEach(() => {
@@ -150,6 +154,44 @@ describe("real camera onboarding step", () => {
       expect(screen.getByText("Face aligned. Hold still and capture.")).toBeVisible();
     });
     expect(screen.getByRole("button", { name: "Capture selfie" })).toBeEnabled();
+  });
+
+  it("falls back to the CPU MediaPipe delegate when GPU initialization fails", async () => {
+    const track = { stop: vi.fn() };
+    const stream = { getTracks: () => [track] } as unknown as MediaStream;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) }
+    });
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function getRect(this: Element) {
+      const element = this as Element;
+      if (element.classList.contains("camera-video")) {
+        return { x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 600, width: 400, height: 600, toJSON: () => ({}) };
+      }
+      if (element.classList.contains("face-oval")) {
+        return { x: 100, y: 120, left: 100, top: 120, right: 300, bottom: 420, width: 200, height: 300, toJSON: () => ({}) };
+      }
+      return { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) };
+    });
+    mediaPipeMock.detections = [{ boundingBox: { originX: 135, originY: 170, width: 130, height: 170 } }];
+    mediaPipeMock.createFromOptions
+      .mockRejectedValueOnce(new Error("GPU context unavailable"))
+      .mockResolvedValueOnce({
+        detectForVideo: () => ({ detections: mediaPipeMock.detections }),
+        close: vi.fn()
+      });
+
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Upload profile photo" }));
+    await userEvent.click(screen.getByRole("button", { name: "Allow camera access" }));
+
+    await waitFor(() => {
+      expect(mediaPipeMock.createFromOptions).toHaveBeenCalledTimes(2);
+      expect(mediaPipeMock.createFromOptions.mock.calls[0][1].baseOptions.delegate).toBe("GPU");
+      expect(mediaPipeMock.createFromOptions.mock.calls[1][1].baseOptions.delegate).toBe("CPU");
+      expect(screen.getByRole("button", { name: "Capture selfie" })).toBeEnabled();
+    });
   });
 
   it("uses the captured selfie on the date-of-birth profile circle", async () => {

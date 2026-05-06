@@ -38,6 +38,7 @@ type DetectedFace = {
 
 type FaceDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<DetectedFace[]>;
+  close?: () => void;
 };
 
 type FaceDetectorConstructor = new () => FaceDetectorLike;
@@ -1353,7 +1354,7 @@ function GovernmentIdVerificationScreen({
 
     if (nameStatus === "MISMATCH") {
       const nm = vr.nameMatch;
-      messages.push(
+        messages.push(
         nm?.details
           ? `Name mismatch: ${nm.details}`
           : `The name on your document does not match your profile. Go back and correct your legal name.`
@@ -1848,6 +1849,9 @@ function SelfieCameraScreen({
   useEffect(() => {
     return () => {
       stream?.getTracks().forEach((track) => track.stop());
+      if (videoRef.current?.srcObject === stream) {
+        videoRef.current.srcObject = null;
+      }
     };
   }, [stream]);
 
@@ -1861,6 +1865,7 @@ function SelfieCameraScreen({
     let detecting = false;
     let lastDetectionAt = 0;
     let lastAlignment: typeof faceAlignment = "checking";
+    let activeDetector: FaceDetectorLike | null = null;
 
     function updateAlignment(nextAlignment: typeof faceAlignment) {
       if (lastAlignment !== nextAlignment) {
@@ -1872,10 +1877,12 @@ function SelfieCameraScreen({
     async function startDetection() {
       const detector = await createRealFaceDetector();
       if (!detector || cancelled) {
+        detector?.close?.();
         setFaceAlignment("unsupported");
         return;
       }
 
+      activeDetector = detector;
       setFaceAlignment("checking");
       runDetectionLoop(detector, performance.now());
     }
@@ -1902,6 +1909,10 @@ function SelfieCameraScreen({
       if (!video || !oval) {
         return;
       }
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        updateAlignment("checking");
+        return;
+      }
 
       try {
         const faces = await detector.detect(video);
@@ -1926,6 +1937,7 @@ function SelfieCameraScreen({
       if (animationFrameId) {
         window.cancelAnimationFrame(animationFrameId);
       }
+      activeDetector?.close?.();
     };
   }, [cameraStatus]);
 
@@ -1936,7 +1948,9 @@ function SelfieCameraScreen({
     }
 
     setCameraStatus("requesting");
+    setFaceAlignment("checking");
     try {
+      stream?.getTracks().forEach((track) => track.stop());
       const nextStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -2031,28 +2045,38 @@ async function createRealFaceDetector(): Promise<FaceDetectorLike | null> {
 
   try {
     const visionFiles = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
-    const detector = await MediaPipeFaceDetector.createFromOptions(visionFiles, {
-      baseOptions: {
-        modelAssetPath: MEDIAPIPE_FACE_MODEL_URL,
-        delegate: "GPU"
-      },
-      runningMode: "VIDEO",
-      minDetectionConfidence: 0.65
-    });
+    for (const delegate of ["GPU", "CPU"] as const) {
+      try {
+        const detector = await MediaPipeFaceDetector.createFromOptions(visionFiles, {
+          baseOptions: {
+            modelAssetPath: MEDIAPIPE_FACE_MODEL_URL,
+            delegate
+          },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.65
+        });
 
-    return {
-      async detect(source: HTMLVideoElement) {
-        const result = detector.detectForVideo(source, performance.now());
-        return result.detections.map((detection) => ({
-          boundingBox: {
-            x: detection.boundingBox?.originX ?? 0,
-            y: detection.boundingBox?.originY ?? 0,
-            width: detection.boundingBox?.width ?? 0,
-            height: detection.boundingBox?.height ?? 0
+        return {
+          async detect(source: HTMLVideoElement) {
+            const result = detector.detectForVideo(source, performance.now());
+            return result.detections.map((detection) => ({
+              boundingBox: {
+                x: detection.boundingBox?.originX ?? 0,
+                y: detection.boundingBox?.originY ?? 0,
+                width: detection.boundingBox?.width ?? 0,
+                height: detection.boundingBox?.height ?? 0
+              }
+            }));
+          },
+          close() {
+            detector.close?.();
           }
-        }));
+        };
+      } catch {
+        // Mobile browsers can fail to initialize GPU resources after reloads; CPU is slower but reliable.
       }
-    };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -2191,39 +2215,39 @@ function DobScreen({
           </label>
         </div>
         <p className="dob-field-label">Date of birth</p>
-        <button
+          <button
           ref={triggerRef}
-          className="date-field custom-date-trigger"
-          type="button"
-          aria-expanded={isCalendarOpen}
-          aria-label="Open date of birth calendar"
+            className="date-field custom-date-trigger"
+            type="button"
+            aria-expanded={isCalendarOpen}
+            aria-label="Open date of birth calendar"
           onClick={toggleCalendar}
-        >
+          >
           <span aria-hidden="true" style={{ fontSize: 18 }}>📅</span>
           <strong className={hasDob ? "has-value" : ""}>{hasDob ? formatDisplayDate(dateOfBirth) : "MM / DD / YYYY"}</strong>
-          <span className="calendar-glyph" aria-hidden="true">▾</span>
-        </button>
-        {isCalendarOpen && (
+            <span className="calendar-glyph" aria-hidden="true">▾</span>
+          </button>
+          {isCalendarOpen && (
           <div ref={calendarRef} className="custom-calendar" role="dialog" aria-label="Choose date of birth">
-            <div className="calendar-header">
-              <button aria-label="Previous month" onClick={() => {
-                const next = new Date(calendarYear, calendarMonth - 1, 1);
-                setCalendarYear(next.getFullYear());
-                setCalendarMonth(next.getMonth());
-              }}>‹</button>
-              <strong>{MONTHS[calendarMonth]} {calendarYear}</strong>
-              <button aria-label="Next month" onClick={() => {
-                const next = new Date(calendarYear, calendarMonth + 1, 1);
-                setCalendarYear(next.getFullYear());
-                setCalendarMonth(next.getMonth());
-              }}>›</button>
-            </div>
-            <div className="calendar-selectors">
-              <select aria-label="Month" value={calendarMonth} onChange={(event) => setCalendarMonth(Number(event.target.value))}>
-                {MONTHS.map((month, index) => (
-                  <option value={index} key={month}>{month}</option>
-                ))}
-              </select>
+              <div className="calendar-header">
+                <button aria-label="Previous month" onClick={() => {
+                  const next = new Date(calendarYear, calendarMonth - 1, 1);
+                  setCalendarYear(next.getFullYear());
+                  setCalendarMonth(next.getMonth());
+                }}>‹</button>
+                <strong>{MONTHS[calendarMonth]} {calendarYear}</strong>
+                <button aria-label="Next month" onClick={() => {
+                  const next = new Date(calendarYear, calendarMonth + 1, 1);
+                  setCalendarYear(next.getFullYear());
+                  setCalendarMonth(next.getMonth());
+                }}>›</button>
+              </div>
+              <div className="calendar-selectors">
+                <select aria-label="Month" value={calendarMonth} onChange={(event) => setCalendarMonth(Number(event.target.value))}>
+                  {MONTHS.map((month, index) => (
+                    <option value={index} key={month}>{month}</option>
+                  ))}
+                </select>
               <div className="calendar-year-picker">
                 <button
                   type="button"
@@ -2236,7 +2260,7 @@ function DobScreen({
                 </button>
                 {isYearListOpen && (
                   <div className="calendar-year-list" role="listbox" aria-label="Year options">
-                    {getDobYears().map((year) => (
+                  {getDobYears().map((year) => (
                       <button
                         type="button"
                         role="option"
@@ -2255,34 +2279,34 @@ function DobScreen({
                   </div>
                 )}
               </div>
+              </div>
+              <div className="calendar-weekdays">
+                {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}
+              </div>
+              <div className="calendar-days">
+                {Array.from({ length: getFirstWeekday(calendarYear, calendarMonth) }, (_, index) => (
+                  <span className="calendar-empty" key={`empty-${index}`} />
+                ))}
+                {Array.from({ length: getDaysInMonth(calendarYear, calendarMonth) }, (_, index) => {
+                  const day = index + 1;
+                  const value = toDateInputValue(new Date(calendarYear, calendarMonth, day));
+                  const isSelected = calendarYear === selectedDate.getFullYear() && calendarMonth === selectedDate.getMonth() && day === selectedDay;
+                  const isDisabled = value > latestAllowedDob;
+                  return (
+                    <button
+                      className={isSelected ? "selected" : ""}
+                      aria-label={`${getFullMonthName(calendarMonth)} ${day}, ${calendarYear}`}
+                      disabled={isDisabled}
+                      key={day}
+                      onClick={() => selectDay(day)}
+                    >
+                      {day}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <div className="calendar-weekdays">
-              {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}
-            </div>
-            <div className="calendar-days">
-              {Array.from({ length: getFirstWeekday(calendarYear, calendarMonth) }, (_, index) => (
-                <span className="calendar-empty" key={`empty-${index}`} />
-              ))}
-              {Array.from({ length: getDaysInMonth(calendarYear, calendarMonth) }, (_, index) => {
-                const day = index + 1;
-                const value = toDateInputValue(new Date(calendarYear, calendarMonth, day));
-                const isSelected = calendarYear === selectedDate.getFullYear() && calendarMonth === selectedDate.getMonth() && day === selectedDay;
-                const isDisabled = value > latestAllowedDob;
-                return (
-                  <button
-                    className={isSelected ? "selected" : ""}
-                    aria-label={`${getFullMonthName(calendarMonth)} ${day}, ${calendarYear}`}
-                    disabled={isDisabled}
-                    key={day}
-                    onClick={() => selectDay(day)}
-                  >
-                    {day}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+          )}
         <label className="email-field">
           Email address
           <input
@@ -2843,38 +2867,38 @@ function W2ProfileScreen({
       ssn: "Re-enter SSN"
     } satisfies Record<NonNullable<typeof editingField>, string>;
 
-    return (
+  return (
       <section className="w2-profile-edit-screen">
         <button className="identity-close w2-profile-close" onClick={() => setEditingField(null)} aria-label="Back">×</button>
         <div className="w2-profile-edit-content">
           <h1>{titleByField[editingField]}</h1>
           {editingField === "name" && (
             <div className="w2-edit-fields">
-              <label>
-                Legal first name
+      <label>
+        Legal first name
                 <input value={profile.legalFirstName} onChange={(event) => onChange("legalFirstName", event.target.value)} placeholder="First name" />
-              </label>
-              <label>
-                Legal last name
+      </label>
+      <label>
+        Legal last name
                 <input value={profile.legalLastName} onChange={(event) => onChange("legalLastName", event.target.value)} placeholder="Last name" />
-              </label>
+      </label>
             </div>
           )}
           {editingField === "dob" && (
             <div className="w2-edit-fields">
-              <label>
+      <label>
                 Birthdate
-                <input value={profile.dateOfBirth} onChange={(event) => onChange("dateOfBirth", event.target.value)} placeholder="YYYY-MM-DD" />
-              </label>
+        <input value={profile.dateOfBirth} onChange={(event) => onChange("dateOfBirth", event.target.value)} placeholder="YYYY-MM-DD" />
+      </label>
             </div>
           )}
           {editingField === "email" && (
             <div className="w2-edit-fields">
-              <label>
+      <label>
                 Email address
                 <input type="email" value={profile.email} onChange={(event) => onChange("email", event.target.value)} placeholder="you@example.com" />
-              </label>
-            </div>
+      </label>
+          </div>
           )}
           {editingField === "phone" && (
             <div className="w2-edit-fields">
@@ -2882,12 +2906,12 @@ function W2ProfileScreen({
                 Phone number
                 <input type="tel" inputMode="tel" value={profile.phone} onChange={(event) => onChange("phone", event.target.value)} placeholder="(323) 555-7890" />
               </label>
-            </div>
-          )}
+        </div>
+      )}
           {editingField === "ssn" && (
             <div className="w2-edit-fields">
               <p>For security, re-enter your full SSN. The existing SSN is not shown here.</p>
-              <label>
+      <label>
                 SSN
                 <input
                   inputMode="numeric"
@@ -2895,7 +2919,7 @@ function W2ProfileScreen({
                   onChange={(event) => setSsnDraft(event.target.value)}
                   placeholder="XXX-XX-XXXX"
                 />
-              </label>
+      </label>
             </div>
           )}
         </div>
@@ -3019,7 +3043,7 @@ function WorkBright({
   const progressPercent = Math.min(Math.round((currentStep / 5) * 100), 100);
 
   function wbShell(title: string | null, children: ReactNode, footer: ReactNode) {
-    return (
+  return (
       <section className="workbright-browser-screen">
         <div className="workbright-browser-bar">
           <button className="wb-bar-close">Close</button>
@@ -3475,7 +3499,7 @@ function FeedbackScreen() {
               aria-label={`${star} star${star > 1 ? "s" : ""}`}
             >
               {star <= (hoveredStar || rating) ? "★" : "☆"}
-            </button>
+        </button>
           ))}
           {rating > 0 && (
             <span className="feedback-rating-label">
