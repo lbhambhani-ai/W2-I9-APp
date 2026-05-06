@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" role="img" aria-label="Non ID watch scene test image">
+  <rect width="1000" height="620" fill="#e8e8e8"/>
+  <path d="M0 90 H1000 M0 190 H1000 M0 290 H1000 M0 390 H1000" stroke="#b8b8b8" stroke-width="9"/>
+  <path d="M120 0 L900 620 M420 0 L1000 420 M0 410 L720 0" stroke="#c7c7c7" stroke-width="9"/>
+  <ellipse cx="600" cy="315" rx="300" ry="75" fill="#c89b82" transform="rotate(-12 600 315)"/>
+  <rect x="520" y="235" width="72" height="220" rx="18" fill="#777" transform="rotate(-12 556 345)"/>
+  <circle cx="565" cy="235" r="62" fill="#d0d0d0" stroke="#444" stroke-width="12"/>
+  <circle cx="565" cy="235" r="42" fill="#f8fafc"/>
+  <path d="M410 500 C450 390, 590 390, 640 500 Z" fill="#c18e76"/>
+  <circle cx="525" cy="410" r="74" fill="#b9826b"/>
+  <text x="70" y="580" font-family="Arial, sans-serif" font-size="34" font-weight="800" fill="#8a1f1f">NON-ID TEST SCENE</text>
+</svg>

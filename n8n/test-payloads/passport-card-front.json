@@ -1,0 +1,12 @@
+{
+  "requestId": "test-passportcard-front-001",
+  "selectedDocumentType": "passport-card",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Jane",
+    "legalMiddleName": "",
+    "legalLastName": "Smith",
+    "dateOfBirth": "1990-03-15"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "requestId": "test-passport-front-001",
+  "selectedDocumentType": "passport",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Muhammad",
+    "legalMiddleName": "Abdullah",
+    "legalLastName": "Abbasi",
+    "dateOfBirth": "2004-07-09"
+  }
+}

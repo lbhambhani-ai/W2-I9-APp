@@ -1,0 +1,12 @@
+{
+  "requestId": "test-militaryid-front-001",
+  "selectedDocumentType": "military-id",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "James",
+    "legalMiddleName": "Robert",
+    "legalLastName": "Carter",
+    "dateOfBirth": "1988-11-05"
+  }
+}

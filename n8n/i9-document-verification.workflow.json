@@ -1,0 +1,212 @@
+{
+  "name": "I-9 Document Verification - Gemini Vision",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "i9/verify-document",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "i9-webhook-001",
+      "name": "I9 Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [820, 340],
+      "webhookId": "i9-verify-document"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst p = body.profile || {};\nconst i9 = body.i9Context || {};\nconst imgLen = (body.imageBase64 || '').length;\n\nconsole.log('\\n======== I-9 DOCUMENT INTAKE ========');\nconsole.log('[I9] requestId=' + (body.requestId || 'MISSING'));\nconsole.log('[I9] immigrationStatus=' + (i9.citizenshipStatus || 'MISSING'));\nconsole.log('[I9] documentPath=' + (i9.documentPath || 'MISSING'));\nconsole.log('[I9] expectedList=' + (i9.expectedList || 'MISSING'));\nconsole.log('[I9] expectedDocId=' + (i9.expectedDocId || 'MISSING'));\nconsole.log('[I9] expectedDocLabel=' + (i9.expectedDocLabel || 'MISSING'));\nconsole.log('[I9] selectedDocumentType=' + (body.selectedDocumentType || 'MISSING'));\nconsole.log('[I9] documentSide=' + (body.documentSide || 'MISSING'));\nconsole.log('[I9] profile: firstName=' + (p.legalFirstName || 'MISSING') + ' lastName=' + (p.legalLastName || 'MISSING') + ' DOB=' + (p.dateOfBirth || 'MISSING'));\nconsole.log('[I9] imageBase64 length=' + imgLen + ' chars (~' + Math.round(imgLen * 0.75 / 1024) + ' KB)');\nconsole.log('=====================================\\n');\n\nconst allowedTypes = ['drivers-license','state-id','passport','passport-card','permanent-resident-card','employment-authorization-card','military-id','unknown'];\nconst allowedSides = ['front','back'];\nconst missing = [];\nfor (const path of ['requestId','selectedDocumentType','documentSide','imageBase64','profile.legalFirstName','profile.legalLastName','profile.dateOfBirth']) {\n  const val = path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), body);\n  if (val === undefined || val === null || val === '') missing.push(path);\n}\nif (!i9.citizenshipStatus) missing.push('i9Context.citizenshipStatus');\nif (!i9.expectedList) missing.push('i9Context.expectedList');\nif (!i9.expectedDocLabel) missing.push('i9Context.expectedDocLabel');\n\nconst invalid = [];\nif (body.selectedDocumentType && !allowedTypes.includes(body.selectedDocumentType)) invalid.push('selectedDocumentType');\nif (body.documentSide && !allowedSides.includes(body.documentSide)) invalid.push('documentSide');\n\nif (missing.length || invalid.length) {\n  console.log('[I9] REJECTED: missing=' + JSON.stringify(missing) + ' invalid=' + JSON.stringify(invalid));\n  return [{ json: { valid: false, response: { success: false, requestId: body.requestId || null, error: { code: 'INVALID_REQUEST', message: 'Missing or invalid fields.', missing, invalid }, analysis: null } } }];\n}\nconsole.log('[I9] VALID - proceeding');\nreturn [{ json: { ...body, valid: true } }];"
+      },
+      "id": "i9-validate-001",
+      "name": "Validate I9 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "id": "valid-cond", "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "i9-if-valid-001",
+      "name": "Is I9 Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1260, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "i9-respond-invalid-001",
+      "name": "Respond Invalid I9 Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1480, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst raw = String(input.imageBase64 || '');\nconst match = raw.match(/^data:(.*?);base64,(.*)$/);\nconst mimeType = match ? (match[1] || 'image/png') : 'image/png';\nconst base64 = match ? match[2] : raw;\nconst extByMime = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };\nconst ext = extByMime[mimeType] || 'png';\nconst fileName = `${input.requestId}-i9-${input.i9Context?.expectedList || 'doc'}-${input.documentSide}.${ext}`;\nconst buffer = Buffer.from(base64, 'base64');\nif (!buffer.length) throw new Error('imageBase64 decoded to empty buffer');\nconst binary = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\nreturn [{\n  json: {\n    ...input,\n    mimeType,\n    fileName,\n    imageDataUrl: raw.startsWith('data:') ? raw : `data:${mimeType};base64,${base64}`\n  },\n  binary: { image: binary, data: binary }\n}];"
+      },
+      "id": "i9-convert-binary-001",
+      "name": "Convert I9 Image To Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 240]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.fileName }}",
+        "driveId": { "__rl": true, "mode": "list", "value": "My Drive" },
+        "folderId": { "__rl": true, "mode": "id", "value": "17N2GfPmuGpZ9OErpOwNHl_xv8L5rB9Sy" },
+        "inputDataFieldName": "image",
+        "options": {}
+      },
+      "id": "i9-upload-drive-001",
+      "name": "Upload I9 Doc To Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1700, 240],
+      "credentials": {
+        "googleDriveOAuth2Api": { "id": "2sGyO0NkRuwAciq3", "name": "LB workspace" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $items('Convert I9 Image To Binary')[0].json;\nconst upload = $json;\nconst googleDriveFileId = upload.id || upload.fileId || null;\nconst p = request.profile || {};\nconst i9 = request.i9Context || {};\n\nconsole.log('[I9-PREPARE] requestId=' + request.requestId);\nconsole.log('[I9-PREPARE] driveFileId=' + googleDriveFileId);\nconsole.log('[I9-PREPARE] expectedList=' + i9.expectedList + ' expectedDoc=' + i9.expectedDocLabel);\nconsole.log('[I9-PREPARE] citizenshipStatus=' + i9.citizenshipStatus);\nconsole.log('[I9-PREPARE] selectedDocumentType=' + request.selectedDocumentType);\n\nconst binItem = $items('Convert I9 Image To Binary')[0].binary || {};\nconst imgBin = binItem.image || binItem.data || null;\nreturn [{\n  json: {\n    requestId: request.requestId,\n    selectedDocumentType: request.selectedDocumentType,\n    documentSide: request.documentSide,\n    mimeType: request.mimeType,\n    fileName: request.fileName,\n    imageDataUrl: request.imageDataUrl,\n    googleDriveFileId,\n    profile: {\n      legalFirstName: p.legalFirstName || '',\n      legalMiddleName: p.legalMiddleName || '',\n      legalLastName: p.legalLastName || '',\n      dateOfBirth: p.dateOfBirth || ''\n    },\n    i9Context: {\n      citizenshipStatus: i9.citizenshipStatus || '',\n      documentPath: i9.documentPath || '',\n      expectedList: i9.expectedList || '',\n      expectedDocId: i9.expectedDocId || '',\n      expectedDocLabel: i9.expectedDocLabel || ''\n    }\n  },\n  binary: imgBin ? { image: imgBin, data: imgBin } : undefined\n}];"
+      },
+      "id": "i9-prepare-context-001",
+      "name": "Prepare I9 Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 240]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": { "__rl": true, "value": "models/gemini-2.5-flash", "mode": "list", "cachedResultName": "models/gemini-2.5-flash" },
+        "text": "=You are an I-9 document verification system. Analyze the uploaded image and return ONLY valid JSON — no Markdown, no code fences, no prose.\n\nCONTEXT:\n- Immigration status: {{ $json.i9Context.citizenshipStatus }}\n- Document path: {{ $json.i9Context.documentPath }}\n- Expected list: {{ $json.i9Context.expectedList }}\n- Expected document: {{ $json.i9Context.expectedDocLabel }}\n- Selected gov type: {{ $json.selectedDocumentType }}\n- Document side: {{ $json.documentSide }}\n- Profile name: {{ $json.profile.legalFirstName }} {{ $json.profile.legalLastName }}\n- Profile DOB: {{ $json.profile.dateOfBirth }}\n\nTASKS:\n1. Detect what document is actually in the image.\n2. Determine which I-9 list the ACTUAL document belongs to:\n   - List A: US Passport, US Passport Card, Permanent Resident Card, Employment Authorization Document, Foreign Passport with I-551/I-94\n   - List B: Driver's License, State ID Card, School ID, Voter Registration Card, Military Card/ID\n   - List C: Social Security Card, Birth Certificate, US Citizen ID Card, Native American Tribal Document, Employment Authorization Document (work auth only)\n3. Check if actual doc matches expected (list + label).\n4. CROSS-LIST MISMATCH: If actual list differs from expected list, flag WRONG_LIST with specific message naming both lists.\n5. WRONG DOCUMENT: If same list but different document, flag WRONG_DOCUMENT naming both documents.\n6. Compare name (case-insensitive, ignore middle names, accept LAST FIRST order) and DOB to profile. Dates: normalize to YYYY-MM-DD.\n7. Check expiration date against today ({{ new Date().toISOString().split('T')[0] }}).\n8. Verify document is appropriate for immigration status.\n\nIMMIGRATION STATUS RULES:\n- us_citizen: US Passport, Passport Card (A), Driver's License, State ID (B), Social Security Card, Birth Certificate (C)\n- noncitizen_national: Same as citizen plus foreign passport options\n- lawful_permanent_resident: Permanent Resident Card (A), Driver's License, State ID (B), Social Security Card (C)\n- noncitizen_authorized: Employment Authorization Document (A), Driver's License, State ID (B), EAD (C)\n\nSUPPORTED detectedDocumentType values:\n  drivers-license | state-id | passport | passport-card | permanent-resident-card | employment-authorization-card | military-id | unknown\n\nRETURN THIS EXACT JSON:\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"drivers-license\",\n  \"detectedDocumentTypeLabel\": \"US Driver's License\",\n  \"actualDocumentList\": \"B\",\n  \"documentTypeMatch\": false,\n  \"listMatch\": false,\n  \"detectedSide\": \"front\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null,\n    \"document_number\": null, \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"dobMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"VALID\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"immigrationStatusCheck\": {\n    \"documentAllowedForStatus\": true,\n    \"reason\": null\n  },\n  \"crossListMismatch\": {\n    \"detected\": false,\n    \"expectedList\": \"A\",\n    \"actualList\": \"A\",\n    \"message\": null\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"Your document has been verified successfully.\"\n}\n\nFLAG FORMAT: { \"severity\": \"CRITICAL\", \"code\": \"FLAG_CODE\", \"message\": \"Human-readable description\" }\n\nFLAG CODES:\n- WRONG_LIST: Document belongs to a different I-9 list than expected. Message MUST say which list was expected and which was uploaded.\n- WRONG_DOCUMENT: Same list but wrong document type. Message MUST name both documents.\n- NAME_MISMATCH: Name on document doesn't match profile.\n- DOB_MISMATCH: Date of birth doesn't match profile.\n- DOCUMENT_EXPIRED: Document is expired.\n- STATUS_INELIGIBLE: Document not valid for immigration status.\n- IMAGE_QUALITY_LOW: Image too blurry or dark.\n- NO_DOCUMENT_DETECTED: No document found in image.\n\ncomplianceEligibility = true ONLY when ALL of: documentDetected, listMatch, documentTypeMatch, nameMatch MATCH, dobMatch MATCH, not expired, documentAllowedForStatus.\n\nuserMessage RULES:\n- Max 2 sentences, friendly and specific.\n- If OK: confirm document name + \"verified successfully\".\n- If wrong list: \"You selected [expected doc] (List [X]) but uploaded a [actual doc], which is a List [Y] document. Please upload your [expected doc] instead.\"\n- If wrong doc same list: \"You selected [expected doc] but this appears to be a [actual doc]. Please upload the correct document.\"\n- If name mismatch: \"The name on this [doc type] does not match your profile. Please verify your legal name or upload the correct document.\"\n- If DOB mismatch: \"The date of birth on this [doc type] does not match your profile.\"\n- If expired: \"This [doc type] expired on [date]. Please provide a valid, unexpired document.\"\n- If blurry: \"We couldn't read this document clearly. Please retake the photo with better lighting.\"\n- Never expose internal flag codes to the user.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "i9-gemini-primary-001",
+      "name": "Analyze I9 Document",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [2140, 240],
+      "credentials": {
+        "googlePalmApi": { "id": "m4VCWj43BbfwQLJf", "name": "Prod Ops Gemini Key" }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\nconsole.log('[I9-FALLBACK] Primary Gemini 2.5 Flash failed: ' + JSON.stringify(error?.message || error?.error || 'unknown'));\nconsole.log('[I9-FALLBACK] Routing to gemini-2.0-flash...');\n\nconst contextItem = $('Prepare I9 Context').item;\nconst imgBin = contextItem.binary?.image || contextItem.binary?.data || null;\n\nreturn [{\n  json: { ...contextItem.json, _fallbackReason: String(error?.message || error?.error || 'Primary model unavailable') },\n  binary: imgBin ? { image: imgBin, data: imgBin } : undefined\n}];"
+      },
+      "id": "i9-fallback-prep-001",
+      "name": "Prepare I9 Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 480]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": { "__rl": true, "value": "models/gemini-2.0-flash", "mode": "list", "cachedResultName": "models/gemini-2.0-flash" },
+        "text": "=You are an I-9 document verification system. Analyze the uploaded image and return ONLY valid JSON — no Markdown, no code fences, no prose.\n\nCONTEXT:\n- Immigration status: {{ $json.i9Context.citizenshipStatus }}\n- Document path: {{ $json.i9Context.documentPath }}\n- Expected list: {{ $json.i9Context.expectedList }}\n- Expected document: {{ $json.i9Context.expectedDocLabel }}\n- Selected gov type: {{ $json.selectedDocumentType }}\n- Document side: {{ $json.documentSide }}\n- Profile name: {{ $json.profile.legalFirstName }} {{ $json.profile.legalLastName }}\n- Profile DOB: {{ $json.profile.dateOfBirth }}\n\nTASKS:\n1. Detect what document is actually in the image.\n2. Determine which I-9 list the ACTUAL document belongs to:\n   - List A: US Passport, US Passport Card, Permanent Resident Card, Employment Authorization Document, Foreign Passport with I-551/I-94\n   - List B: Driver's License, State ID Card, School ID, Voter Registration Card, Military Card/ID\n   - List C: Social Security Card, Birth Certificate, US Citizen ID Card, Native American Tribal Document, Employment Authorization Document (work auth only)\n3. Check if actual doc matches expected (list + label).\n4. CROSS-LIST MISMATCH: If actual list differs from expected list, flag WRONG_LIST.\n5. WRONG DOCUMENT: If same list but different document, flag WRONG_DOCUMENT.\n6. Compare name (case-insensitive, ignore middle names) and DOB to profile.\n7. Check expiration.\n8. Verify document is appropriate for immigration status.\n\nRETURN THIS EXACT JSON:\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"drivers-license\",\n  \"detectedDocumentTypeLabel\": \"US Driver's License\",\n  \"actualDocumentList\": \"B\",\n  \"documentTypeMatch\": false,\n  \"listMatch\": false,\n  \"detectedSide\": \"front\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null,\n    \"document_number\": null, \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"dobMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"VALID\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"immigrationStatusCheck\": { \"documentAllowedForStatus\": true, \"reason\": null },\n  \"crossListMismatch\": { \"detected\": false, \"expectedList\": \"A\", \"actualList\": \"A\", \"message\": null },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"Your document has been verified successfully.\"\n}\n\nReturn ONLY strict JSON. No Markdown. No code fences.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "i9-gemini-fallback-001",
+      "name": "Analyze I9 Document (Fallback)",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [2360, 480],
+      "credentials": {
+        "googlePalmApi": { "id": "m4VCWj43BbfwQLJf", "name": "Prod Ops Gemini Key" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const context = $('Prepare I9 Context').item.json;\nconst rawAnalysis = $input.first().json;\nconst i9 = context.i9Context || {};\n\nconsole.log('[I9-FORMAT] Raw keys: ' + Object.keys(rawAnalysis).join(', '));\nconsole.log('[I9-FORMAT] typeof text: ' + typeof rawAnalysis.text);\n\nfunction extractJSON(raw) {\n  if (raw.documentDetected !== undefined) return raw;\n  const candidates = [\n    raw.text,\n    raw.content?.parts?.[0]?.text,\n    raw.output_text,\n    typeof raw.message === 'string' ? raw.message : null\n  ];\n  for (const candidate of candidates) {\n    if (typeof candidate !== 'string') continue;\n    const cleaned = candidate.replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/i, '').trim();\n    console.log('[I9-PARSE] Trying candidate, first 200 chars: ' + cleaned.substring(0, 200));\n    try { return JSON.parse(cleaned); } catch(e) { console.log('[I9-PARSE] Failed: ' + e.message); }\n  }\n  return null;\n}\n\nfunction toFieldMatch(val) {\n  if (!val) return { status: 'NOT_CHECKED' };\n  if (typeof val === 'string') {\n    const s = val.toUpperCase();\n    return { status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED' };\n  }\n  if (typeof val === 'object') {\n    const s = String(val.status || 'NOT_CHECKED').toUpperCase();\n    return {\n      status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED',\n      details: val.details || null,\n      userProvided: val.userProvided || null,\n      documentExtracted: val.documentExtracted || null\n    };\n  }\n  return { status: 'NOT_CHECKED' };\n}\n\nfunction toFlag(f) {\n  if (typeof f === 'string') return { severity: 'CRITICAL', code: f, message: f.replace(/_/g, ' ').toLowerCase() };\n  return { severity: f.severity || 'CRITICAL', code: f.code || 'UNKNOWN', message: f.message || f.code || 'Unknown issue' };\n}\n\nconst a = extractJSON(rawAnalysis);\n\nif (!a) {\n  console.log('[I9-RESULT] PARSE FAILED — returning friendly error');\n  return [{ json: {\n    success: false, requestId: context.requestId, source: 'n8n-i9-gemini',\n    googleDriveFileId: context.googleDriveFileId || null,\n    userMessage: 'We could not verify this image automatically. Please retake the photo with good lighting and ensure the full document is visible.',\n    analysis: {\n      documentDetected: false, detectedDocumentType: 'unknown', detectedDocumentTypeLabel: 'Unknown',\n      documentTypeMatch: false, userSelectedType: context.selectedDocumentType || 'unknown',\n      userSelectedTypeLabel: 'Unknown', detectedSide: context.documentSide || 'front',\n      sideMatchesSelected: false, extractedFields: {},\n      validationResults: {\n        nameMatch: { status: 'NOT_CHECKED' }, dobMatch: { status: 'NOT_CHECKED' },\n        addressMatch: { status: 'NOT_CHECKED' }, expirationStatus: 'UNKNOWN', photoIntegrity: 'UNCLEAR'\n      },\n      flags: [{ severity: 'CRITICAL', code: 'ANALYSIS_FAILED', message: 'Document could not be read from the image.' }],\n      complianceEligibility: false, nextAction: 'RETAKE_PHOTO',\n      humanReviewRequired: true, reviewReason: 'Gemini response parse failure'\n    }\n  } }];\n}\n\nconsole.log('[I9-FORMAT] Parsed OK. documentDetected=' + a.documentDetected + ' detectedType=' + a.detectedDocumentType);\n\nconst vr = a.validationResults || {};\nconst ef = a.extractedFields || {};\nconst clm = a.crossListMismatch || {};\nconst isc = a.immigrationStatusCheck || {};\n\nlet flags = Array.isArray(a.flags) ? a.flags.map(toFlag) : [];\n\nif (clm.detected && !flags.some(f => f.code === 'WRONG_LIST')) {\n  flags.unshift({ severity: 'CRITICAL', code: 'WRONG_LIST', message: clm.message || 'Document belongs to a different I-9 list than expected.' });\n}\nif (a.documentTypeMatch === false && a.listMatch === true && !flags.some(f => f.code === 'WRONG_DOCUMENT')) {\n  flags.unshift({ severity: 'WARNING', code: 'WRONG_DOCUMENT', message: 'You selected \"' + (i9.expectedDocLabel || '') + '\" but uploaded a different document from the same list.' });\n}\nif (isc.documentAllowedForStatus === false && !flags.some(f => f.code === 'STATUS_INELIGIBLE')) {\n  flags.unshift({ severity: 'CRITICAL', code: 'STATUS_INELIGIBLE', message: isc.reason || 'This document is not valid for your immigration status.' });\n}\n\nconst complianceEligibility = typeof a.complianceEligibility === 'boolean' ? a.complianceEligibility : false;\n\nconst labels = {\n  'drivers-license': \"US Driver's License\", 'state-id': 'US State ID Card',\n  'passport': 'US Passport', 'passport-card': 'US Passport Card',\n  'permanent-resident-card': 'US Permanent Resident Card',\n  'employment-authorization-card': 'US Employment Authorization Card',\n  'military-id': 'US Military ID', 'unknown': 'Unknown Document'\n};\n\nconst detectedType = a.detectedDocumentType || context.selectedDocumentType || 'unknown';\nconst selectedType = context.selectedDocumentType || 'unknown';\n\nconst normalizedAnalysis = {\n  documentDetected: Boolean(a.documentDetected),\n  userSelectedType: selectedType,\n  userSelectedTypeLabel: labels[selectedType] || selectedType,\n  detectedDocumentType: detectedType,\n  detectedDocumentTypeLabel: a.detectedDocumentTypeLabel || labels[detectedType] || detectedType,\n  documentTypeMatch: Boolean(a.documentTypeMatch),\n  detectedSide: a.detectedSide || context.documentSide || 'front',\n  sideMatchesSelected: Boolean(a.sideMatchesSelected !== false),\n  extractedFields: ef,\n  validationResults: {\n    nameMatch: toFieldMatch(vr.nameMatch),\n    dobMatch: toFieldMatch(vr.dobMatch),\n    addressMatch: toFieldMatch(vr.addressMatch || 'NOT_CHECKED'),\n    expirationStatus: vr.expirationStatus || 'UNKNOWN',\n    photoIntegrity: vr.photoIntegrity || 'CLEAR'\n  },\n  flags,\n  complianceEligibility,\n  nextAction: a.nextAction || (complianceEligibility ? 'CONTINUE' : 'HALT_VERIFICATION'),\n  humanReviewRequired: Boolean(a.humanReviewRequired ?? !complianceEligibility),\n  reviewReason: a.reviewReason || null\n};\n\nconsole.log('\\n======== I-9 VERIFICATION RESULT ========');\nconsole.log('[I9] request=' + context.requestId);\nconsole.log('[I9] immigration=' + i9.citizenshipStatus + ' expectedList=' + i9.expectedList + ' expectedDoc=' + i9.expectedDocLabel);\nconsole.log('[I9] detectedDoc=' + (a.detectedDocumentTypeLabel || '?') + ' actualList=' + (a.actualDocumentList || '?'));\nconsole.log('[I9] listMatch=' + a.listMatch + ' docMatch=' + a.documentTypeMatch);\nconsole.log('[I9] crossListMismatch=' + JSON.stringify(clm));\nconsole.log('[I9] statusCheck=' + JSON.stringify(isc));\nconsole.log('[I9] name=' + normalizedAnalysis.validationResults.nameMatch.status + ' dob=' + normalizedAnalysis.validationResults.dobMatch.status);\nconsole.log('[I9] compliance=' + complianceEligibility + ' action=' + normalizedAnalysis.nextAction);\nconsole.log('[I9] flags=' + JSON.stringify(flags));\nconsole.log('[I9] userMessage=' + (a.userMessage || 'none'));\nconsole.log('=========================================\\n');\n\nreturn [{ json: {\n  success: true,\n  requestId: context.requestId,\n  source: 'n8n-i9-gemini',\n  googleDriveFileId: context.googleDriveFileId || null,\n  userMessage: a.userMessage || (complianceEligibility ? 'Your document has been verified successfully.' : 'There was an issue verifying your document. Please check the details below.'),\n  analysis: normalizedAnalysis\n} }];"
+      },
+      "id": "i9-format-response-001",
+      "name": "Format I9 Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2360, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "i9-respond-result-001",
+      "name": "Respond I9 Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2580, 240]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "I9 Verification Webhook": {
+      "main": [[{ "node": "Validate I9 Request", "type": "main", "index": 0 }]]
+    },
+    "Validate I9 Request": {
+      "main": [[{ "node": "Is I9 Request Valid?", "type": "main", "index": 0 }]]
+    },
+    "Is I9 Request Valid?": {
+      "main": [
+        [{ "node": "Convert I9 Image To Binary", "type": "main", "index": 0 }],
+        [{ "node": "Respond Invalid I9 Request", "type": "main", "index": 0 }]
+      ]
+    },
+    "Convert I9 Image To Binary": {
+      "main": [[{ "node": "Upload I9 Doc To Google Drive", "type": "main", "index": 0 }]]
+    },
+    "Upload I9 Doc To Google Drive": {
+      "main": [[{ "node": "Prepare I9 Context", "type": "main", "index": 0 }]]
+    },
+    "Prepare I9 Context": {
+      "main": [[{ "node": "Analyze I9 Document", "type": "main", "index": 0 }]]
+    },
+    "Analyze I9 Document": {
+      "main": [
+        [{ "node": "Format I9 Response", "type": "main", "index": 0 }],
+        [{ "node": "Prepare I9 Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare I9 Fallback": {
+      "main": [[{ "node": "Analyze I9 Document (Fallback)", "type": "main", "index": 0 }]]
+    },
+    "Analyze I9 Document (Fallback)": {
+      "main": [[{ "node": "Format I9 Response", "type": "main", "index": 0 }]]
+    },
+    "Format I9 Response": {
+      "main": [[{ "node": "Respond I9 Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "i9-v2-fixed-2026-05-06",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5af3afb38f8674a00c025a9c92d12ea4b38dfe8e9127a5a712d25099414396a2"
+  },
+  "id": "i9DocVerification",
+  "tags": []
+}

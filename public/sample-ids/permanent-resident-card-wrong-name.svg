@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" role="img" aria-label="Specimen US Permanent Resident Card with wrong name">
+  <rect width="1000" height="620" fill="#f7fbfa"/>
+  <rect x="35" y="45" width="930" height="520" rx="34" fill="#c7eee7" stroke="#4e998d" stroke-width="12"/>
+  <path d="M80 120 C250 40, 360 210, 520 120 S790 40, 925 150 L925 535 L80 535 Z" fill="#f5b9b1" opacity=".55"/>
+  <path d="M70 440 C210 300, 420 520, 610 350 S820 300, 940 430" fill="none" stroke="#fff" stroke-width="26" opacity=".55"/>
+  <text x="84" y="105" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#254b4b">UNITED STATES OF AMERICA</text>
+  <text x="84" y="160" font-family="Arial, sans-serif" font-size="48" font-weight="800" fill="#1e6260">PERMANENT RESIDENT</text>
+  <rect x="92" y="215" width="245" height="280" rx="18" fill="#dbe4e8" stroke="#6d7f87" stroke-width="5"/>
+  <circle cx="214" cy="315" r="70" fill="#b7c2c8"/>
+  <path d="M115 474 C145 390, 285 390, 315 474" fill="#9daab0"/>
+  <text x="405" y="230" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">Surname</text>
+  <text x="405" y="272" font-family="Arial, sans-serif" font-size="48" font-weight="800" fill="#222">SPECIMEN</text>
+  <text x="405" y="325" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">Given Name</text>
+  <text x="405" y="367" font-family="Arial, sans-serif" font-size="44" font-weight="800" fill="#222">TEST V</text>
+  <text x="405" y="420" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">USCIS#</text>
+  <text x="525" y="420" font-family="Arial, sans-serif" font-size="36" font-weight="800" fill="#222">A123456789</text>
+  <text x="405" y="475" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">Date of Birth</text>
+  <text x="610" y="475" font-family="Arial, sans-serif" font-size="36" font-weight="800" fill="#222">20 OCT 2002</text>
+  <text x="405" y="530" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">Card Expires</text>
+  <text x="620" y="530" font-family="Arial, sans-serif" font-size="36" font-weight="800" fill="#222">10/26/32</text>
+  <text x="760" y="420" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#5a686d">Category</text>
+  <text x="760" y="462" font-family="Arial, sans-serif" font-size="42" font-weight="800" fill="#222">IR1</text>
+  <text x="80" y="590" font-family="Arial, sans-serif" font-size="26" font-weight="800" fill="#8a1f1f">SPECIMEN - NOT A REAL ID</text>
+</svg>
