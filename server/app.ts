@@ -415,7 +415,7 @@ export function createServer() {
   if (existsSync(clientDistPath)) {
     app.use(express.static(clientDistPath));
     // SPA fallback — serve index.html for any non-API route
-    app.get("*", (_request, response) => {
+    app.get(/\/.*/, (_request, response) => {
       response.sendFile(join(clientDistPath, "index.html"));
     });
   }
