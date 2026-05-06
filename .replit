@@ -13,3 +13,12 @@ deploymentTarget = "cloudrun"
 [[ports]]
 localPort = 3001
 externalPort = 80
+
+[userenv]
+
+[userenv.shared]
+IDENTITY_VERIFICATION_SERVICE_URL = "https://instawork.app.n8n.cloud/webhook/identity/verify-document"
+I9_VERIFICATION_URL = "https://instawork.app.n8n.cloud/webhook/i9/verify-document"
+
+[agent]
+expertMode = true
