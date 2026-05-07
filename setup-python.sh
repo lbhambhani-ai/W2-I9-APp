@@ -7,6 +7,16 @@
 
 set -e
 
+# Allow skipping the entire Python OCR setup in environments where the sidecar
+# is disabled (e.g. production deployments that rely on n8n as the primary
+# verification path). This drastically speeds up deployment builds by avoiding
+# the multi-GB PyTorch/EasyOCR install.
+if [ "${ENABLE_PYTHON_OCR:-true}" = "false" ]; then
+  echo "=== Python OCR Setup ==="
+  echo "ENABLE_PYTHON_OCR=false — skipping Python sidecar install."
+  exit 0
+fi
+
 # The Nix environment provides a pip.conf (via PIP_CONFIG_FILE) that sets
 # "user = yes" globally. Inside a virtualenv, user site-packages are disabled,
 # so every pip call fails with "Can not perform a --user install".
