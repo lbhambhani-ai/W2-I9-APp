@@ -1,5 +1,5 @@
 import { createServer } from "./app";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,13 +16,29 @@ function startPythonOcrSidecar() {
     return;
   }
 
-  const pythonBin = existsSync("/usr/bin/python3") ? "python3"
-    : existsSync("/home/runner/.venv/bin/python") ? "/home/runner/.venv/bin/python"
+  const localVenvPython = join(process.cwd(), ".venv", "bin", "python");
+  const replitVenvPython = "/home/runner/.venv/bin/python";
+  const pythonBin = existsSync(localVenvPython) ? localVenvPython
+    : existsSync(replitVenvPython) ? replitVenvPython
     : "python3";
 
   const ocrPort = process.env.PYTHON_OCR_PORT || "8001";
+  const libstdcxxLookup = spawnSync("sh", ["-lc", "dirname \"$(find /nix/store -name libstdc++.so.6 2>/dev/null | head -n 1)\""], {
+    encoding: "utf8"
+  });
+  const libstdcxxDir = libstdcxxLookup.stdout.trim();
+  const sidecarEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: "1",
+    ...(libstdcxxDir && libstdcxxDir !== "."
+      ? { LD_LIBRARY_PATH: `${libstdcxxDir}:${process.env.LD_LIBRARY_PATH || ""}` }
+      : {})
+  };
 
   console.log(`[python-ocr] Starting sidecar on port ${ocrPort} using ${pythonBin}...`);
+  if (libstdcxxDir && libstdcxxDir !== ".") {
+    console.log(`[python-ocr] Using libstdc++ from ${libstdcxxDir}`);
+  }
 
   const proc = spawn(
     pythonBin,
@@ -31,7 +47,7 @@ function startPythonOcrSidecar() {
       cwd: process.cwd(),
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" }
+      env: sidecarEnv
     }
   );
 

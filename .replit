@@ -4,7 +4,7 @@ modules = ["nodejs-20", "python-3.11"]
 
 [nix]
 channel = "stable-24_05"
-packages = ["python311", "python311Packages.pip", "libGL", "zbar", "stdenv.cc.cc.lib"]
+packages = ["python311", "python311Packages.pip", "libGL", "zbar", "stdenv.cc.cc.lib", "gcc-unwrapped"]
 
 [deployment]
 run = ["sh", "-c", "npm run build && npm start"]

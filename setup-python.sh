@@ -20,6 +20,16 @@ fi
 
 echo "Python: $(python3 --version)"
 
+# PyTorch/EasyOCR needs libstdc++.so.6. Replit's Nix store may provide it
+# outside the default dynamic linker path, so expose it explicitly when present.
+LIBSTDCXX_DIR="$(dirname "$(find /nix/store -name libstdc++.so.6 2>/dev/null | head -n 1)")"
+if [ -n "$LIBSTDCXX_DIR" ] && [ "$LIBSTDCXX_DIR" != "." ]; then
+  export LD_LIBRARY_PATH="$LIBSTDCXX_DIR:${LD_LIBRARY_PATH:-}"
+  echo "Using libstdc++ from: $LIBSTDCXX_DIR"
+else
+  echo "WARNING: libstdc++.so.6 not found in /nix/store before install."
+fi
+
 # Create venv if it doesn't exist
 if [ ! -d "$VENV_DIR" ]; then
   echo "Creating virtual environment at $VENV_DIR ..."
@@ -46,7 +56,7 @@ fi
 
 # Pre-download EasyOCR model into .ocr-cache so first request isn't slow
 echo "Pre-downloading EasyOCR model (this may take 1-2 minutes on first run)..."
-python3 -c "
+if ! python3 -c "
 import easyocr, pathlib
 cache = pathlib.Path('.ocr-cache')
 model_dir = cache / 'model'
@@ -55,7 +65,12 @@ model_dir.mkdir(parents=True, exist_ok=True)
 user_net_dir.mkdir(parents=True, exist_ok=True)
 reader = easyocr.Reader(['en'], gpu=False, model_storage_directory=str(model_dir), user_network_directory=str(user_net_dir))
 print('EasyOCR model ready.')
-" 2>&1 | grep -v "^$" || echo "Model download attempted."
+"; then
+  echo ""
+  echo "ERROR: EasyOCR could not start. Python OCR fallback is not ready."
+  echo "Check that Replit rebuilt the Nix environment with gcc-unwrapped and stdenv.cc.cc.lib."
+  exit 1
+fi
 
 echo ""
 echo "=== Setup Complete ==="
