@@ -1,0 +1,16 @@
+{
+  "requestId": "test-stateid-front-001",
+  "selectedDocumentType": "state-id",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Shantika",
+    "legalMiddleName": "Shanae",
+    "legalLastName": "Anderson",
+    "dateOfBirth": "1989-09-28",
+    "addressLine1": "3384 Mount Zion Rd Apt 1104",
+    "city": "Stockbridge",
+    "state": "GA",
+    "zip": "30281"
+  }
+}

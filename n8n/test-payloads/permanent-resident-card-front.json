@@ -1,0 +1,12 @@
+{
+  "requestId": "test-prc-front-001",
+  "selectedDocumentType": "permanent-resident-card",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Carlos",
+    "legalMiddleName": "",
+    "legalLastName": "Rivera",
+    "dateOfBirth": "1985-06-20"
+  }
+}

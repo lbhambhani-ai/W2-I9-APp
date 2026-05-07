@@ -1,0 +1,12 @@
+{
+  "requestId": "test-ead-front-001",
+  "selectedDocumentType": "employment-authorization-card",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Maureen",
+    "legalMiddleName": "Onyine",
+    "legalLastName": "Akabueze",
+    "dateOfBirth": "1996-11-28"
+  }
+}

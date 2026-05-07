@@ -1,0 +1,199 @@
+{
+  "name": "Identity Verification V2 - GPT Name+DOB+Expiry Compare",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "identity/verify-document",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Identity Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1100, 100],
+      "webhookId": "identity-verify-document-v2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Validate incoming payload ──────────────────────────────────────────────\nconst body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst required = [\n  'requestId', 'selectedDocumentType', 'documentSide',\n  'imageBase64', 'profile.legalFirstName', 'profile.legalLastName', 'profile.dateOfBirth'\n];\nconst allowed = {\n  selectedDocumentType: ['drivers-license','state-id','passport','passport-card','permanent-resident-card','employment-authorization-card','military-id','unknown'],\n  documentSide: ['front','back']\n};\nconst missing = [];\nfor (const path of required) {\n  const val = path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), body);\n  if (val === undefined || val === null || val === '') missing.push(path);\n}\nconst invalid = [];\nif (body.selectedDocumentType && !allowed.selectedDocumentType.includes(body.selectedDocumentType)) invalid.push('selectedDocumentType');\nif (body.documentSide && !allowed.documentSide.includes(body.documentSide)) invalid.push('documentSide');\nif (missing.length || invalid.length) {\n  return [{ json: { valid: false, response: { success: false, requestId: body.requestId || null, error: { code: 'INVALID_REQUEST', message: 'Missing or invalid fields.', missing, invalid }, analysis: null } } }];\n}\nreturn [{ json: { ...body, valid: true } }];"
+      },
+      "id": "node-validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-860, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-is-valid",
+      "name": "Is Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-620, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "node-respond-invalid",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-380, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Decode base64 to binary ────────────────────────────────────────────────\nconst input = $json;\nconst raw = String(input.imageBase64 || '');\nconst match = raw.match(/^data:(.*?);base64,(.*)$/);\nconst mimeType = match ? (match[1] || 'image/png') : 'image/png';\nconst base64 = match ? match[2] : raw;\nconst extByMime = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };\nconst ext = extByMime[mimeType] || 'png';\nconst fileName = `${input.requestId}-${input.selectedDocumentType}-${input.documentSide}.${ext}`;\nconst buffer = Buffer.from(base64, 'base64');\nif (!buffer.length) throw new Error('imageBase64 decoded to empty buffer');\nconst binary = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\nreturn [{\n  json: {\n    ...input,\n    mimeType,\n    fileName,\n    imageDataUrl: raw.startsWith('data:') ? raw : `data:${mimeType};base64,${base64}`\n  },\n  binary: { image: binary }\n}];"
+      },
+      "id": "node-b64-to-binary",
+      "name": "Convert Base64 To Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-380, -60]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.fileName }}",
+        "driveId": { "__rl": true, "mode": "list", "value": "My Drive" },
+        "folderId": { "__rl": true, "mode": "id", "value": "1vn1OXPH2al136Us9th9LHR96nwIqHLQd" },
+        "inputDataFieldName": "image",
+        "options": {}
+      },
+      "id": "node-gdrive",
+      "name": "Upload ID Image To Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-120, -60],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_DRIVE_CREDENTIAL_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Build the GPT prompt that:\n//   1. Receives the FULL raw OCR text (no regex, no pre-labelling)\n//   2. Receives the user's onboarding name + DOB (entered at sign-up)\n//   3. Asks GPT to extract, understand and label fields itself\n//   4. Asks GPT to compare extracted name/DOB/expiry against profile\n//   5. Returns every result as a boolean check + human-readable message\n// ──────────────────────────────────────────────────────────────────────────\nconst request = $items('Convert Base64 To Binary')[0].json;\nconst upload  = $json;\nconst googleDriveFileId = upload.id || upload.fileId || null;\nconst p = request.profile || {};\n\n// ---- SYSTEM PROMPT -------------------------------------------------------\nconst systemPrompt = `You are an identity-document verification assistant.\n\nYour job is to:\n1. Look at the attached image of a US government-issued ID or work-authorization document.\n2. Read ALL visible text on the document — return it verbatim in rawOcrText without any filtering, labelling, or regex.\n3. From that raw text, use your own understanding to identify and label every field (name, DOB, expiry, address, document number, etc.).\n4. Compare the extracted name and DOB against the user's onboarding profile values (provided below).\n5. Check the expiry date to determine if the document is currently valid.\n6. Evaluate document type, side, image quality, and physical authenticity.\n7. Return ONLY a single strict JSON object — no Markdown, no prose, no code fences.\n\n──────────────────────────────────────────────────\nSUPPORTED detectedDocumentType values:\n  drivers-license | state-id | passport | passport-card |\n  permanent-resident-card | employment-authorization-card | military-id | unknown\n\nSUPPORTED detectedSide values: front | back\n\nSUPPORTED nextAction values:\n  CONTINUE | HALT_VERIFICATION | REQUEST_BACK_IMAGE | REQUEST_FRONT_IMAGE | RETAKE_PHOTO\n\n──────────────────────────────────────────────────\nFIELD EXTRACTION RULES:\n- rawOcrText: copy every character you can read from the image, including labels (e.g. \"DATE OF BIRTH\", \"EXP\", \"LN\", etc.). Do NOT summarise or strip anything.\n- extractedFields: after reading rawOcrText, use your semantic understanding to assign values. Never use regex. Handle abbreviations, watermarks, line-wrapping, and non-standard layouts.\n- For names: normalise to Title Case. Accept reversed (LAST FIRST) and comma-separated (LAST, FIRST) formats.\n- For dates: normalise to ISO YYYY-MM-DD. Accept MM/DD/YYYY, DD MMM YYYY, MMDDYYYY, and similar.\n- If a field is genuinely unreadable set its value to null — do not guess.\n\n──────────────────────────────────────────────────\nCOMPARISON RULES (name, DOB, expiry):\n- nameCompare: compare extractedFields.first_name + last_name against profile.legalFirstName + legalLastName.\n  Use fuzzy matching: ignore case, punctuation, extra spaces. Accept common abbreviations/nicknames only if very clear.\n  Result: MATCH | PARTIAL_MATCH | MISMATCH | NOT_CHECKED (if field is null).\n- dobCompare: compare extractedFields.date_of_birth against profile.dateOfBirth (YYYY-MM-DD).\n  Result: MATCH | MISMATCH | NOT_CHECKED.\n- expiryCheck: compare extractedFields.expiration_date against today (${new Date().toISOString().split('T')[0]}).\n  Result: VALID | EXPIRES_SOON (within 90 days) | EXPIRED | NOT_FOUND.\n\n──────────────────────────────────────────────────\nBOOLEAN CHECKS — return true/false for EVERY key:\n  documentDetected           — a physical ID or work-authorization document is visible\n  supportedDocumentType      — detectedDocumentType is not 'unknown'\n  documentTypeMatchesSelection — detectedDocumentType matches userSelectedType\n  sideMatchesSelection       — detectedSide matches the requested documentSide\n  frontImageRequired         — front side has not yet been verified (false if this IS the front)\n  backImageRequired          — back side is needed after this front\n  nameExtracted              — first_name and last_name are not null\n  dobExtracted               — date_of_birth is not null\n  nameMatchesProfile         — nameCompare result is MATCH or PARTIAL_MATCH\n  dobMatchesProfile          — dobCompare result is MATCH\n  documentExpired            — expiryCheck is EXPIRED\n  documentExpiresSoon        — expiryCheck is EXPIRES_SOON\n  imageQualityLow            — image is too blurry, dark, or cropped to read key fields\n  glareDetected              — visible glare obscures text\n  croppedDocument            — document edges are cut off\n  physicalDocumentLikely     — document appears to be a real physical card/booklet, not a screen photo\n  digitalManipulationSuspected — signs of editing, overlays, or inconsistent fonts\n  humanReviewRequired        — any CRITICAL flag is present, or you are uncertain\n  canContinue                — all critical checks pass and verification may proceed\n\n──────────────────────────────────────────────────\nFLAGS — include any that apply (severity: CRITICAL | WARN | INFO):\n  NO_DOCUMENT_DETECTED | UNSUPPORTED_DOCUMENT | DOCUMENT_TYPE_MISMATCH | SIDE_MISMATCH |\n  IMAGE_QUALITY_LOW | PHOTO_BLURRED | DOCUMENT_CROPPED | GLARE_DETECTED |\n  NAME_MISMATCH | DOB_MISMATCH | NAME_NOT_EXTRACTED | DOB_NOT_EXTRACTED |\n  EXPIRATION_DATE_NOT_FOUND | DOCUMENT_EXPIRED | DOCUMENT_EXPIRES_SOON |\n  ADDRESS_MISMATCH | DIGITAL_MANIPULATION_SUSPECTED\n\n──────────────────────────────────────────────────\nUSER MESSAGE RULES:\n- Write one short, friendly message for the user (max 2 sentences).\n- Do NOT reveal internal flag codes.\n- If canContinue is true: confirm the document looks good and state the next step.\n- If canContinue is false: explain the specific problem and what the user should do.\n- Never say \"name mismatch\" when the side is wrong or the image is unreadable.\n- Never expose raw field values from the document in the message.\n\n──────────────────────────────────────────────────\nReturn exactly this JSON schema (all keys required):\n{\n  requestId, rawOcrText,\n  documentDetected, userSelectedType, userSelectedTypeLabel,\n  detectedDocumentType, detectedDocumentTypeLabel,\n  documentTypeMatch, detectedSide, sideMatchesSelected,\n  extractedFields: {\n    full_name_raw, first_name, middle_name, last_name, name_suffix,\n    date_of_birth, expiration_date, issue_date,\n    document_number, address, sex, height, eye_color, donor,\n    passport_number, mrz_line_1, mrz_line_2, mrz_line_3,\n    a_number, category, card_number, card_expires,\n    place_of_birth, nationality, country_code\n  },\n  fieldConfidence: { first_name, last_name, date_of_birth, expiration_date },\n  nameCompare, dobCompare, expiryCheck,\n  validationResults: {\n    nameMatch: { status, details },\n    dobMatch:  { status, details },\n    addressMatch: { status, details },\n    expirationStatus, photoIntegrity\n  },\n  booleanChecks: {\n    documentDetected, supportedDocumentType, documentTypeMatchesSelection,\n    sideMatchesSelection, frontImageRequired, backImageRequired,\n    nameExtracted, dobExtracted, nameMatchesProfile, dobMatchesProfile,\n    documentExpired, documentExpiresSoon,\n    imageQualityLow, glareDetected, croppedDocument,\n    physicalDocumentLikely, digitalManipulationSuspected,\n    humanReviewRequired, canContinue\n  },\n  flags: [{ severity, code, message }],\n  complianceEligibility, nextAction,\n  humanReviewRequired, reviewReason,\n  userMessage\n}`;\n\n// ---- USER PROMPT ---------------------------------------------------------\nconst userPrompt = [\n  `Verify the attached identity document image.`,\n  ``,\n  `── App input ──────────────────────────────────`,\n  `requestId:            ${request.requestId}`,\n  `selectedDocumentType: ${request.selectedDocumentType}`,\n  `documentSide:         ${request.documentSide}`,\n  ``,\n  `── User profile (entered during onboarding) ───`,\n  `legalFirstName:  ${p.legalFirstName  || ''}`,\n  `legalMiddleName: ${p.legalMiddleName || ''}`,\n  `legalLastName:   ${p.legalLastName   || ''}`,\n  `dateOfBirth:     ${p.dateOfBirth     || ''}`,\n  `addressLine1:    ${p.addressLine1    || ''}`,\n  `city:            ${p.city            || ''}`,\n  `state:           ${p.state           || ''}`,\n  `zip:             ${p.zip             || ''}`,\n  ``,\n  `── Your tasks ─────────────────────────────────`,\n  `1. Copy every readable character from the image into rawOcrText (no filtering, no regex).`,\n  `2. From rawOcrText, use your own understanding to populate extractedFields.`,\n  `3. Compare extracted name to profile name → nameCompare.`,\n  `4. Compare extracted DOB to profile DOB  → dobCompare.`,\n  `5. Evaluate expiry date                  → expiryCheck.`,\n  `6. Fill every booleanChecks key.`,\n  `7. Set flags for every issue found.`,\n  `8. Set canContinue = true only when: documentDetected, documentTypeMatchesSelection,`,\n  `   sideMatchesSelection, nameMatchesProfile, dobMatchesProfile, NOT documentExpired,`,\n  `   NOT imageQualityLow, NOT digitalManipulationSuspected.`,\n  `9. Write one clear userMessage.`,\n  ``,\n  `Return ONLY strict JSON. No prose. No code fences.`\n].join('\\n');\n\nconst openAiRequestBody = {\n  model: $env.OPENAI_IDENTITY_MODEL || 'gpt-4.1-mini',\n  input: [\n    {\n      role: 'system',\n      content: [{ type: 'input_text', text: systemPrompt }]\n    },\n    {\n      role: 'user',\n      content: [\n        { type: 'input_text', text: userPrompt },\n        { type: 'input_image', image_url: request.imageDataUrl }\n      ]\n    }\n  ],\n  text: { format: { type: 'json_object' } },\n  temperature: 0\n};\n\nreturn [{ json: { ...request, googleDriveFileId, googleDriveUpload: upload, openAiRequestBody } }];"
+      },
+      "id": "node-build-prompt",
+      "name": "Build GPT Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [140, -60]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/responses",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.openAiRequestBody) }}",
+        "options": { "timeout": 0 }
+      },
+      "id": "node-call-gpt",
+      "name": "Call OpenAI Vision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parse + validate GPT response ─────────────────────────────────────────\nconst original = $items('Build GPT Prompt')[0].json;\nconst response = $json;\n\nfunction extractText(r) {\n  if (typeof r.output_text === 'string') return r.output_text;\n  if (Array.isArray(r.output)) {\n    const parts = [];\n    for (const item of r.output) {\n      if (Array.isArray(item.content)) {\n        for (const c of item.content) {\n          if (typeof c.text === 'string')        parts.push(c.text);\n          if (typeof c.output_text === 'string') parts.push(c.output_text);\n        }\n      }\n    }\n    if (parts.length) return parts.join('\\n');\n  }\n  if (typeof r.text    === 'string') return r.text;\n  if (typeof r.message === 'string') return r.message;\n  return '';\n}\n\nfunction safeFailure(reason) {\n  return {\n    success: false, requestId: original.requestId,\n    source: 'n8n-chatgpt-vision-v2',\n    googleDriveFileId: original.googleDriveFileId || null,\n    userMessage: 'We could not verify this image automatically. Please try again.',\n    nextAction: 'HALT_VERIFICATION', canContinue: false, humanReviewRequired: true,\n    analysis: {\n      requestId: original.requestId, rawOcrText: null, documentDetected: false,\n      booleanChecks: {\n        documentDetected: false, supportedDocumentType: false,\n        documentTypeMatchesSelection: false, sideMatchesSelection: false,\n        frontImageRequired: true, backImageRequired: false,\n        nameExtracted: false, dobExtracted: false,\n        nameMatchesProfile: false, dobMatchesProfile: false,\n        documentExpired: false, documentExpiresSoon: false,\n        imageQualityLow: true, glareDetected: false, croppedDocument: false,\n        physicalDocumentLikely: false, digitalManipulationSuspected: false,\n        humanReviewRequired: true, canContinue: false\n      },\n      flags: [{ severity: 'CRITICAL', code: 'MODEL_RESPONSE_INVALID',\n        message: 'The verifier could not return a valid structured response.' }],\n      complianceEligibility: false, nextAction: 'HALT_VERIFICATION',\n      humanReviewRequired: true, reviewReason: reason,\n      userMessage: 'We could not verify this image automatically. Please try again.'\n    }\n  };\n}\n\nlet raw = extractText(response).trim();\nraw = raw.replace(/^```(?:json)?\\s*/i, '').replace(/```$/i, '').trim();\n\nlet analysis;\ntry { analysis = JSON.parse(raw); }\ncatch (e) { return [{ json: safeFailure(`Invalid JSON: ${e.message}`) }]; }\n\nconst requiredKeys = [\n  'requestId','rawOcrText','documentDetected','detectedDocumentType',\n  'detectedSide','extractedFields','booleanChecks','flags','nextAction','userMessage',\n  'nameCompare','dobCompare','expiryCheck'\n];\nconst missing = requiredKeys.filter(k => !(k in analysis));\nif (missing.length) return [{ json: safeFailure(`Model missing keys: ${missing.join(', ')}`) }];\n\nif (analysis.requestId !== original.requestId) analysis.requestId = original.requestId;\n\nconst bc = analysis.booleanChecks || {};\nconst wrapper = {\n  success: true,\n  requestId: original.requestId,\n  source: 'n8n-chatgpt-vision-v2',\n  googleDriveFileId: original.googleDriveFileId || null,\n  userMessage: analysis.userMessage || '',\n  nextAction: analysis.nextAction || 'HALT_VERIFICATION',\n  canContinue: Boolean(bc.canContinue),\n  humanReviewRequired: Boolean(analysis.humanReviewRequired || bc.humanReviewRequired),\n  // ── top-level compare results for easy access ──\n  nameCompare: analysis.nameCompare || 'NOT_CHECKED',\n  dobCompare:  analysis.dobCompare  || 'NOT_CHECKED',\n  expiryCheck: analysis.expiryCheck || 'NOT_FOUND',\n  analysis\n};\nreturn [{ json: wrapper }];"
+      },
+      "id": "node-normalize",
+      "name": "Normalize GPT Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, -60]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Build final boolean summary + user-facing messages ────────────────────\n// Every check is resolved here so the app only needs to read this object.\nconst r = $json;\nconst a = r.analysis || {};\nconst bc = a.booleanChecks || {};\nconst flags = a.flags || [];\nconst ef = a.extractedFields || {};\n\nconst flagCodes = flags.map(f => f.code);\n\n// ── Boolean summary (flat, easy to read in app or logs) ───────────────────\nconst checks = {\n  documentDetected:               Boolean(bc.documentDetected),\n  supportedDocumentType:          Boolean(bc.supportedDocumentType),\n  documentTypeMatchesSelection:   Boolean(bc.documentTypeMatchesSelection),\n  sideMatchesSelection:           Boolean(bc.sideMatchesSelection),\n  nameExtracted:                  Boolean(bc.nameExtracted),\n  dobExtracted:                   Boolean(bc.dobExtracted),\n  nameMatchesProfile:             Boolean(bc.nameMatchesProfile),\n  dobMatchesProfile:              Boolean(bc.dobMatchesProfile),\n  documentExpired:                Boolean(bc.documentExpired),\n  documentExpiresSoon:            Boolean(bc.documentExpiresSoon),\n  imageQualityLow:                Boolean(bc.imageQualityLow),\n  glareDetected:                  Boolean(bc.glareDetected),\n  croppedDocument:                Boolean(bc.croppedDocument),\n  physicalDocumentLikely:         Boolean(bc.physicalDocumentLikely),\n  digitalManipulationSuspected:   Boolean(bc.digitalManipulationSuspected),\n  humanReviewRequired:            Boolean(bc.humanReviewRequired),\n  canContinue:                    Boolean(bc.canContinue)\n};\n\n// ── Per-check user messages ────────────────────────────────────────────────\n// Each message is shown ONLY when the check fails.\nconst messages = {};\n\nif (!checks.documentDetected)\n  messages.documentDetected = 'No supported US government ID was found in the image. Please upload a clear photo of your ID.';\n\nif (checks.documentDetected && !checks.supportedDocumentType)\n  messages.supportedDocumentType = 'This document type is not supported. Please use a US driver license, state ID, passport, passport card, permanent resident card, employment authorization card, or military ID.';\n\nif (checks.documentDetected && !checks.documentTypeMatchesSelection) {\n  const selected  = a.userSelectedTypeLabel  || a.userSelectedType  || 'the selected type';\n  const detected  = a.detectedDocumentTypeLabel || a.detectedDocumentType || 'a different document';\n  messages.documentTypeMatchesSelection = `You selected \"${selected}\" but the image looks like \"${detected}\". Please choose the correct document type or upload the right document.`;\n}\n\nif (checks.documentDetected && !checks.sideMatchesSelection) {\n  const requested = a.userSelectedSide || 'the requested side';\n  const found     = a.detectedSide     || 'the other side';\n  messages.sideMatchesSelection = `The image shows the ${found} of the document but the ${requested} side was expected. Please upload the correct side.`;\n}\n\nif (!checks.nameExtracted)\n  messages.nameExtracted = 'We could not read a name from the document. Please upload a clearer image.';\n\nif (!checks.dobExtracted)\n  messages.dobExtracted = 'We could not read the date of birth from the document. Please upload a clearer image.';\n\nif (checks.nameExtracted && !checks.nameMatchesProfile) {\n  const compare = r.nameCompare || a.nameCompare || '';\n  messages.nameMatchesProfile = compare === 'PARTIAL_MATCH'\n    ? 'The name on the document partially matches your profile. If this is your correct ID, please contact support.'\n    : 'The name on the document does not match the name in your profile. Please go back and correct your legal name, or upload your own ID.';\n}\n\nif (checks.dobExtracted && !checks.dobMatchesProfile)\n  messages.dobMatchesProfile = 'The date of birth on the document does not match your profile. Please go back and correct your date of birth, or upload your own ID.';\n\nif (checks.documentExpired) {\n  const expiry = ef.expiration_date || ef.card_expires || 'shown on document';\n  messages.documentExpired = `This document expired on ${expiry}. Please provide a current, valid ID.`;\n}\n\nif (checks.documentExpiresSoon) {\n  const expiry = ef.expiration_date || ef.card_expires || '';\n  messages.documentExpiresSoon = `Your document expires soon${expiry ? ` (${expiry})` : ''}. You may want to renew it before starting work.`;\n}\n\nif (checks.imageQualityLow)\n  messages.imageQualityLow = 'The image quality is too low to read the document clearly. Please retake in good lighting with sharp focus.';\n\nif (checks.glareDetected)\n  messages.glareDetected = 'Glare is obscuring part of the document. Please retake the photo without flash or bright reflections.';\n\nif (checks.croppedDocument)\n  messages.croppedDocument = 'The document appears to be cropped. Please capture the entire document within the frame.';\n\nif (checks.digitalManipulationSuspected)\n  messages.digitalManipulationSuspected = 'This image shows signs of digital editing. Please upload an unmodified photo of your physical ID.';\n\nif (checks.humanReviewRequired && !messages.humanReviewRequired)\n  messages.humanReviewRequired = 'This submission requires manual review. Our team will check your document and get back to you shortly.';\n\n// ── Positive confirmation messages for passing checks ─────────────────────\nconst passing = {};\nif (checks.documentDetected)             passing.documentDetected             = 'Document detected successfully.';\nif (checks.documentTypeMatchesSelection) passing.documentTypeMatchesSelection = `Document type matches your selection (${a.detectedDocumentTypeLabel || a.detectedDocumentType || ''}).`;\nif (checks.sideMatchesSelection)         passing.sideMatchesSelection         = `Correct document side (${a.detectedSide || ''}) confirmed.`;\nif (checks.nameMatchesProfile)           passing.nameMatchesProfile           = 'Name matches your profile.';\nif (checks.dobMatchesProfile)            passing.dobMatchesProfile            = 'Date of birth matches your profile.';\nif (!checks.documentExpired && r.expiryCheck === 'VALID') passing.notExpired   = 'Document is valid and not expired.';\nif (!checks.imageQualityLow)             passing.imageQualityOk              = 'Image quality is acceptable.';\nif (checks.physicalDocumentLikely)       passing.physicalDocument             = 'Document appears to be a genuine physical ID.';\n\nreturn [{ json: {\n  ...r,\n  booleanSummary: checks,\n  failureMessages: messages,\n  passingMessages: passing\n} }];"
+      },
+      "id": "node-boolean-messages",
+      "name": "Build Boolean Checks & Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, -60]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "node-respond-ok",
+      "name": "Respond Verification Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1180, -60]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Identity Verification Webhook": {
+      "main": [[{ "node": "Validate Request", "type": "main", "index": 0 }]]
+    },
+    "Validate Request": {
+      "main": [[{ "node": "Is Request Valid?", "type": "main", "index": 0 }]]
+    },
+    "Is Request Valid?": {
+      "main": [
+        [{ "node": "Convert Base64 To Binary", "type": "main", "index": 0 }],
+        [{ "node": "Respond Invalid Request",  "type": "main", "index": 0 }]
+      ]
+    },
+    "Convert Base64 To Binary": {
+      "main": [[{ "node": "Upload ID Image To Google Drive", "type": "main", "index": 0 }]]
+    },
+    "Upload ID Image To Google Drive": {
+      "main": [[{ "node": "Build GPT Prompt", "type": "main", "index": 0 }]]
+    },
+    "Build GPT Prompt": {
+      "main": [[{ "node": "Call OpenAI Vision", "type": "main", "index": 0 }]]
+    },
+    "Call OpenAI Vision": {
+      "main": [[{ "node": "Normalize GPT Response", "type": "main", "index": 0 }]]
+    },
+    "Normalize GPT Response": {
+      "main": [[{ "node": "Build Boolean Checks & Messages", "type": "main", "index": 0 }]]
+    },
+    "Build Boolean Checks & Messages": {
+      "main": [[{ "node": "Respond Verification Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "identity-v2-gpt-compare",
+  "meta": { "templateCredsSetupCompleted": false },
+  "id": "identity-verification-v2-gpt-compare",
+  "tags": []
+}

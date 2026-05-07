@@ -1,0 +1,16 @@
+{
+  "requestId": "test-dl-front-001",
+  "selectedDocumentType": "drivers-license",
+  "documentSide": "front",
+  "imageBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "profile": {
+    "legalFirstName": "Tyrell",
+    "legalMiddleName": "Jaydon",
+    "legalLastName": "Brooks",
+    "dateOfBirth": "2004-09-22",
+    "addressLine1": "1338 Lake Bonny Dr W",
+    "city": "Lakeland",
+    "state": "FL",
+    "zip": "33801"
+  }
+}

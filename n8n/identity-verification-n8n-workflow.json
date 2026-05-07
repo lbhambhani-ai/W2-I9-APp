@@ -1,0 +1,182 @@
+{
+  "name": "Identity Verification - ChatGPT Vision",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "identity/verify-document",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3cfd7a58-6f8f-4fe7-8a6c-4ef3a5e01001",
+      "name": "Identity Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-1100, 100],
+      "webhookId": "identity-verify-document"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nconst allowedTypes = ['drivers-license','state-id','passport','passport-card','permanent-resident-card','employment-authorization-card','military-id','unknown'];\nconst allowedSides = ['front','back'];\nconst missing = [];\nfor (const path of ['requestId','selectedDocumentType','documentSide','imageBase64','profile.legalFirstName','profile.legalLastName','profile.dateOfBirth']) {\n  const value = path.split('.').reduce((acc, key) => acc && acc[key], body);\n  if (value === undefined || value === null || value === '') missing.push(path);\n}\nconst invalid = [];\nif (body.selectedDocumentType && !allowedTypes.includes(body.selectedDocumentType)) invalid.push('selectedDocumentType');\nif (body.documentSide && !allowedSides.includes(body.documentSide)) invalid.push('documentSide');\nif (missing.length || invalid.length) {\n  return [{ json: { valid: false, response: { success: false, requestId: body.requestId || null, error: { code: 'INVALID_REQUEST', message: 'Missing or invalid fields.', missing, invalid }, analysis: null } } }];\n}\nreturn [{ json: { ...body, valid: true } }];"
+      },
+      "id": "cd7bb1c1-dc49-4f05-bdd2-2c633fa57f62",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-860, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "id": "valid-cond", "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "476f5069-7760-4ccd-92ff-ee93f1279efd",
+      "name": "Is Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-620, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "5def174c-f133-481d-9929-462620aaad77",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-380, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst raw = String(input.imageBase64 || '');\nconst match = raw.match(/^data:(.*?);base64,(.*)$/);\nconst mimeType = match ? (match[1] || 'image/png') : 'image/png';\nconst base64 = match ? match[2] : raw;\nconst extByMime = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };\nconst extension = extByMime[mimeType] || 'png';\nconst fileName = `${input.requestId}-${input.selectedDocumentType}-${input.documentSide}.${extension}`;\nconst buffer = Buffer.from(base64, 'base64');\nif (!buffer.length) throw new Error('imageBase64 decoded to an empty file');\nconst binary = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\nreturn [{ json: { ...input, mimeType, fileName }, binary: { data: binary } }];"
+      },
+      "id": "d4d2ae1f-acf7-47b0-a00a-66c86c273613",
+      "name": "Convert Base64 To Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-380, -20]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.fileName }}",
+        "driveId": { "__rl": true, "mode": "list", "value": "My Drive" },
+        "folderId": { "__rl": true, "mode": "id", "value": "1vn1OXPH2al136Us9th9LHR96nwIqHLQd" },
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "7334ac79-4b41-4312-aef4-0c89c713a497",
+      "name": "Upload ID Image To Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-140, -20],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_DRIVE_CREDENTIAL_ID",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get data from previous nodes\nconst convertNode = $('Convert Base64 To Binary').item;\nconst uploadNode = $json;\n\nconst d = convertNode.json;\nconst p = d.profile || {};\nconst isBackSide = d.documentSide === 'back';\nconst isPRC = d.selectedDocumentType === 'permanent-resident-card';\n\n// Extract binary data properly using n8n helper\nconst bin = convertNode.binary && convertNode.binary.data;\nif (!bin) throw new Error('No binary data found from Convert Base64 To Binary node');\n\nconst buffer = await this.helpers.getBinaryDataBuffer(convertNode, 'data');\nconst base64Image = buffer.toString('base64');\nconst mimeType = bin.mimeType || d.mimeType || 'image/png';\n\n// Known A-Number from profile if previously captured\nconst knownANumber = (p.aNumber || p.alienNumber || p.documentNumber || '').trim();\n\n// Build the appropriate Gemini prompt based on which side is being submitted\nlet prompt;\n\nif (isBackSide) {\n  // BACK SIDE: Only verify it is the genuine back of the selected document.\n  // Do NOT check name, DOB, expiry, or address — those were verified on the front.\n  const prcBackExtra = isPRC\n    ? `\\n\\nPermanent Resident Card back-side specifics:\\n- The back must show USCIS security features, a 2D barcode, machine-readable zone (MRZ starting with <<), and/or fingerprint area.\\n- Extract the A-Number (Alien Registration Number) from the back if visible. Format: A followed by 9 digits, e.g. A123456789.${knownANumber ? `\\n- Known A-Number from profile: \"${knownANumber}\". If the back shows a different A-Number, set DOCUMENT_NUMBER_MISMATCH flag and canContinue=false.` : ''}`\n    : '';\n\n  prompt = `You are an identity-document verification assistant.\nThe user has submitted the BACK SIDE of a US government ID.\nYour ONLY job is to confirm this is the correct back side of the selected document type.\nDo NOT check name, date of birth, expiration date, or address — those are verified on the front.\nReturn strict JSON only. No Markdown, no prose.\n\nSelected document type: ${d.selectedDocumentType}\nDocument side submitted: back\nrequestId: ${d.requestId}${prcBackExtra}\n\nBack-side recognition rules:\n- drivers-license back: Shows barcode (PDF417), magnetic stripe, state seal, vehicle restrictions, or endorsements. Usually no photo.\n- state-id back: Same as driver's license back.\n- passport-card back: Shows WHTI-compliant barcode, RFID chip symbol, \"UNITED STATES OF AMERICA\" text, eagle seal. No photo on back.\n- passport (booklet) back: Blank page or decorative imagery. No personal data.\n- permanent-resident-card (Green Card) back: Shows 2D barcode, MRZ lines (starting with <<), USCIS logo, fingerprint or security pattern.\n- employment-authorization-card back: Shows barcode, USCIS logo, fingerprint or security pattern.\n- military-id back: Shows barcode, DoD logo, or sponsor information.\n\nIf the image shows the FRONT of a document instead of the back, set detectedSide=\"front\", sideMatchesSelection=false, flag SIDE_MISMATCH, nextAction=REQUEST_BACK_IMAGE, canContinue=false.\nIf the document type clearly does not match the selected type, set documentTypeMatch=false, flag DOCUMENT_TYPE_MISMATCH, canContinue=false.\nIf image quality is too poor to determine anything, set imageQualityLow=true, flag PHOTO_BLURRED, nextAction=RETAKE_PHOTO, canContinue=false.\nOtherwise set canContinue=true, nextAction=CONTINUE.\n\nReturn exactly this JSON:\n{\n  \"requestId\": \"${d.requestId}\",\n  \"documentDetected\": true,\n  \"userSelectedType\": \"${d.selectedDocumentType}\",\n  \"userSelectedTypeLabel\": \"\",\n  \"detectedDocumentType\": \"\",\n  \"detectedDocumentTypeLabel\": \"\",\n  \"documentTypeMatch\": true,\n  \"detectedSide\": \"back\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null, \"full_name_raw\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null, \"document_number\": null,\n    \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null, \"sex\": null,\n    \"card_number\": null, \"a_number\": null, \"category\": null, \"country_of_birth\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"NOT_CHECKED\", \"details\": \"Back side — name not checked\", \"userProvided\": null, \"documentExtracted\": null },\n    \"dobMatch\": { \"status\": \"NOT_CHECKED\", \"details\": \"Back side — DOB not checked\", \"userProvided\": null, \"documentExtracted\": null },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": null, \"documentExtracted\": null },\n    \"expirationStatus\": \"NOT_CHECKED\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"booleanChecks\": {\n    \"documentDetected\": true, \"supportedDocumentType\": true, \"documentTypeMatchesSelection\": true,\n    \"sideMatchesSelection\": true, \"frontImageRequired\": false, \"backImageRequired\": false,\n    \"nameExtracted\": false, \"dobExtracted\": false, \"nameMatchesProfile\": true, \"dobMatchesProfile\": true,\n    \"addressMatchesProfile\": true, \"documentExpired\": false, \"documentExpiresSoon\": false,\n    \"imageQualityLow\": false, \"glareDetected\": false, \"croppedDocument\": false,\n    \"physicalDocumentLikely\": true, \"digitalManipulationSuspected\": false,\n    \"humanReviewRequired\": false, \"canContinue\": true\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"\"\n}\n\nReturn strict JSON only. Use null for unreadable fields. Do not invent data.`;\n\n} else {\n  // FRONT SIDE: Full verification — document type, name, DOB, expiry, side\n  const prcFrontExtra = isPRC\n    ? `\\n\\nPermanent Resident Card front-side specifics:\\n- Extract the A-Number (Alien Registration Number, labeled \"A#\" or \"A-Number\", 9 digits after A). Return it in extractedFields.a_number.${knownANumber ? `\\n- Known A-Number from profile: \"${knownANumber}\". If the card shows a different A-Number, set DOCUMENT_NUMBER_MISMATCH flag and canContinue=false with a clear message.` : ''}\\n- Extract the card category (e.g. IR1, CR1, LB, RE-9, etc.) in extractedFields.category.`\n    : '';\n\n  prompt = `You are an identity-document verification assistant for a user guidance simulation.\nAnalyze the uploaded image of a physical US identity or work-authorization document.\nReturn strict JSON only. Do not include Markdown, prose, or code fences.\n\nYou must determine ALL of the following:\n1. Is this a real supported US government ID or work authorization document?\n2. What is the actual document type (even if user selected wrong)?\n3. What is the actual side shown (front or back)?\n4. Extract all visible text fields: first name, last name, middle name, DOB, expiration date, document number, address.\n5. Compare extracted name to profile: legalFirstName=\"${p.legalFirstName || ''}\" legalMiddleName=\"${p.legalMiddleName || ''}\" legalLastName=\"${p.legalLastName || ''}\".\n6. Compare extracted DOB to profile: dateOfBirth=\"${p.dateOfBirth || ''}\" (YYYY-MM-DD).\n7. Check if the document is expired as of today.\n\nApp input:\nrequestId: ${d.requestId}\nselectedDocumentType: ${d.selectedDocumentType}\ndocumentSide: front${prcFrontExtra}\n\nRules:\n- Only set NAME_MISMATCH when name is CLEARLY readable AND CLEARLY different from profile. If unreadable, use NOT_CHECKED.\n- Only set DOB_MISMATCH when DOB is CLEARLY readable AND CLEARLY different. If unreadable, use NOT_CHECKED.\n- Normalize all dates to YYYY-MM-DD.\n- Two-digit years: DOB maps to past century, expiry maps to future.\n- EXP/EXPIRES/4b EXPIRES/Card Expires = expiration date. ISS/ISSUED/4a ISSUED/Valid From = issue date NOT expiration.\n- If back side submitted in front slot: SIDE_MISMATCH flag + REQUEST_FRONT_IMAGE.\n- nextAction: CONTINUE (all pass, back image still needed → REQUEST_BACK_IMAGE), RETAKE_PHOTO (quality/no doc), REQUEST_FRONT_IMAGE (back in front slot), HALT_VERIFICATION (mismatch/expired/manipulation).\n- canContinue=true only when: documentDetected=true, documentTypeMatchesSelection=true, sideMatchesSelection=true, nameMatchesProfile=true or NOT_CHECKED, dobMatchesProfile=true or NOT_CHECKED, documentExpired=false.\n- If front is good and document requires a back side (drivers-license, state-id, permanent-resident-card, employment-authorization-card, military-id, passport-card): set nextAction=REQUEST_BACK_IMAGE and canContinue=true.\n\nSupported document types: drivers-license, state-id, passport, passport-card, permanent-resident-card, employment-authorization-card, military-id, unknown.\n\nReturn exactly this JSON:\n{\n  \"requestId\": \"${d.requestId}\",\n  \"documentDetected\": true,\n  \"userSelectedType\": \"${d.selectedDocumentType}\",\n  \"userSelectedTypeLabel\": \"\",\n  \"detectedDocumentType\": \"\",\n  \"detectedDocumentTypeLabel\": \"\",\n  \"documentTypeMatch\": true,\n  \"detectedSide\": \"\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null, \"full_name_raw\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null, \"document_number\": null,\n    \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null, \"sex\": null,\n    \"card_number\": null, \"a_number\": null, \"category\": null, \"country_of_birth\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"${(p.legalFirstName || '')} ${(p.legalLastName || '')}\", \"documentExtracted\": null },\n    \"dobMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"${p.dateOfBirth || ''}\", \"documentExtracted\": null },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": null, \"documentExtracted\": null },\n    \"expirationStatus\": \"UNKNOWN\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"booleanChecks\": {\n    \"documentDetected\": true, \"supportedDocumentType\": true, \"documentTypeMatchesSelection\": true,\n    \"sideMatchesSelection\": true, \"frontImageRequired\": false, \"backImageRequired\": false,\n    \"nameExtracted\": true, \"dobExtracted\": true, \"nameMatchesProfile\": true, \"dobMatchesProfile\": true,\n    \"addressMatchesProfile\": true, \"documentExpired\": false, \"documentExpiresSoon\": false,\n    \"imageQualityLow\": false, \"glareDetected\": false, \"croppedDocument\": false,\n    \"physicalDocumentLikely\": true, \"digitalManipulationSuspected\": false,\n    \"humanReviewRequired\": false, \"canContinue\": true\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"\"\n}\n\nReturn strict JSON only. Use null for unreadable fields. Do not invent data.`;\n}\n\n// Build Gemini request body\nconst geminiBody = {\n  contents: [{\n    parts: [\n      { text: prompt },\n      { inline_data: { mime_type: mimeType, data: base64Image } }\n    ]\n  }],\n  generationConfig: { temperature: 0.1 }\n};\n\nreturn [{\n  json: {\n    ...d,\n    googleDriveFileId: uploadNode.id || uploadNode.fileId || null,\n    _geminiBody: geminiBody\n  }\n}];"
+      },
+      "id": "build-gemini-req-001",
+      "name": "Build Gemini Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [100, -20]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googlePalmApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json._geminiBody) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "aa000001-0000-0000-0000-000000000001",
+      "name": "Gemini Vision Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [820, -20],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "m4VCWj43BbfwQLJf",
+          "name": "Prod Ops Gemini Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('Build Gemini Request').item.json;\nconst response = $json;\n\n// Extract text from every known Gemini response shape\nfunction extractText(r) {\n  if (r.candidates && Array.isArray(r.candidates) && r.candidates[0]) {\n    const cand = r.candidates[0];\n    const parts = cand.content && cand.content.parts;\n    if (Array.isArray(parts) && parts[0] && typeof parts[0].text === 'string') return parts[0].text;\n  }\n  if (typeof r.text === 'string') return r.text;\n  if (typeof r.content === 'string') return r.content;\n  if (typeof r.output === 'string') return r.output;\n  if (r.data && typeof r.data.text === 'string') return r.data.text;\n  return '___PARSE_FAILED_KEYS:' + Object.keys(r).join(',') + '___SAMPLE:' + JSON.stringify(r).slice(0, 500);\n}\n\nfunction safeFailure(reason) {\n  return {\n    success: false,\n    requestId: original.requestId,\n    source: 'n8n-gemini-vision',\n    googleDriveFileId: original.googleDriveFileId || null,\n    userMessage: 'We could not verify this image automatically. Please try again or contact support.',\n    nextAction: 'HALT_VERIFICATION',\n    canContinue: false,\n    humanReviewRequired: true,\n    analysis: {\n      requestId: original.requestId,\n      documentDetected: false,\n      booleanChecks: { canContinue: false, humanReviewRequired: true },\n      flags: [{ severity: 'CRITICAL', code: 'MODEL_RESPONSE_INVALID', message: reason }],\n      complianceEligibility: false,\n      nextAction: 'HALT_VERIFICATION',\n      humanReviewRequired: true,\n      reviewReason: reason,\n      userMessage: 'We could not verify this image automatically. Please try again or contact support.'\n    }\n  };\n}\n\nlet raw = extractText(response).trim();\nraw = raw.replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/i, '').trim();\n\nif (raw.startsWith('___PARSE_FAILED')) {\n  return [{ json: safeFailure(raw) }];\n}\n\nlet analysis;\ntry {\n  analysis = JSON.parse(raw);\n} catch (error) {\n  return [{ json: safeFailure('JSON parse error: ' + error.message + ' | raw[:500]: ' + raw.slice(0, 500)) }];\n}\n\nconst required = ['requestId','documentDetected','detectedDocumentType','detectedSide','booleanChecks','flags','nextAction','userMessage'];\nconst missing = required.filter(k => !(k in analysis));\nif (missing.length) return [{ json: safeFailure('Missing required keys: ' + missing.join(', ')) }];\n\nif (!analysis.requestId) analysis.requestId = original.requestId;\n\nreturn [{ json: {\n  success: true,\n  requestId: original.requestId,\n  source: 'n8n-gemini-vision',\n  googleDriveFileId: original.googleDriveFileId || null,\n  userMessage: analysis.userMessage || '',\n  nextAction: analysis.nextAction || 'HALT_VERIFICATION',\n  canContinue: Boolean(analysis.booleanChecks && analysis.booleanChecks.canContinue),\n  humanReviewRequired: Boolean(analysis.humanReviewRequired || (analysis.booleanChecks && analysis.booleanChecks.humanReviewRequired)),\n  analysis\n} }];"
+      },
+      "id": "27d5fe62-b2cb-4a41-8fbb-739f6dcb8613",
+      "name": "Normalize Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1060, -20]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "7f7fdb2f-17de-436c-875d-a18c88c28bde",
+      "name": "Respond Verification Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1300, -20]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Identity Verification Webhook": {
+      "main": [[{ "node": "Validate Request", "type": "main", "index": 0 }]]
+    },
+    "Validate Request": {
+      "main": [[{ "node": "Is Request Valid?", "type": "main", "index": 0 }]]
+    },
+    "Is Request Valid?": {
+      "main": [
+        [{ "node": "Convert Base64 To Binary", "type": "main", "index": 0 }],
+        [{ "node": "Respond Invalid Request", "type": "main", "index": 0 }]
+      ]
+    },
+    "Convert Base64 To Binary": {
+      "main": [[{ "node": "Upload ID Image To Google Drive", "type": "main", "index": 0 }]]
+    },
+    "Upload ID Image To Google Drive": {
+      "main": [[{ "node": "Build Gemini Request", "type": "main", "index": 0 }]]
+    },
+    "Build Gemini Request": {
+      "main": [[{ "node": "Gemini Vision Analysis", "type": "main", "index": 0 }]]
+    },
+    "Gemini Vision Analysis": {
+      "main": [[{ "node": "Normalize Gemini Response", "type": "main", "index": 0 }]]
+    },
+    "Normalize Gemini Response": {
+      "main": [[{ "node": "Respond Verification Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "c3d4e5f6-a7b8-9012-cdef-345678901234",
+  "meta": { "templateCredsSetupCompleted": true, "instanceId": "5af3afb38f8674a00c025a9c92d12ea4b38dfe8e9127a5a712d25099414396a2" },
+  "id": "identity-verification-chatgpt-vision",
+  "tags": []
+}

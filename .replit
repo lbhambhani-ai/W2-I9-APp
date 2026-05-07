@@ -1,0 +1,20 @@
+run = "npm run build && npm start"
+entrypoint = "server/index.ts"
+modules = ["nodejs-20", "python-3.11"]
+
+[nix]
+channel = "stable-24_05"
+packages = ["python311", "python311Packages.pip", "libGL", "zbar", "stdenv.cc.cc.lib"]
+
+[deployment]
+run = ["sh", "-c", "npm run build && npm start"]
+build = ["sh", "-c", "npm install && bash setup-python.sh"]
+deploymentTarget = "autoscale"
+
+[[ports]]
+localPort = 3001
+externalPort = 80
+
+[[ports]]
+localPort = 8001
+externalPort = 8001

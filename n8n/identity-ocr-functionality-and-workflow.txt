@@ -1,0 +1,703 @@
+Identity OCR Functionality and Workflow Explanation
+===================================================
+
+Purpose
+-------
+The identity OCR system helps a user verify that the ID document they uploaded matches
+their profile before they continue through onboarding.
+
+The app is not only trying to "read text." It is trying to answer these workflow questions:
+
+1. Is there a supported US identity/work-authorization document in the image?
+2. What document type is it really?
+3. Did the user choose the same document type in the app?
+4. Did the user upload the correct side: front vs back?
+5. Can the document fields be read clearly?
+6. Does the document legal name match the user's profile legal name?
+7. Does the document DOB match the user's profile DOB?
+8. Is the document expired?
+9. If something is wrong, what should the user do next?
+
+
+Supported Documents
+-------------------
+The verification flow is designed around these supported document types:
+
+- US Driver's License
+- US State ID Card
+- US Passport Book
+- US Passport Card
+- US Permanent Resident Card / Green Card
+- United States Employment Authorization Document / EAD / Form I-766
+- US Military ID
+
+The system also handles "unknown" when no supported document is detected.
+
+
+High-Level App Flow
+-------------------
+1. The user selects a document type in the app.
+
+   Example:
+   selectedDocumentType = "drivers-license"
+
+2. The user uploads or captures the front image.
+
+   The app sends:
+   - requestId
+   - selectedDocumentType
+   - documentSide = "front"
+   - imageBase64 or uploaded file reference
+   - profile legal first name
+   - profile legal middle name
+   - profile legal last name
+   - profile DOB
+   - optional profile address fields
+
+3. The verifier analyzes the image and returns structured JSON.
+
+4. If the document requires a back image, the app asks for the back side.
+
+5. The user uploads or captures the back image.
+
+6. The verifier analyzes the back side and returns structured JSON.
+
+7. The app decides whether to continue, request a clearer image, ask for the correct side,
+   block for mismatch, or request human review.
+
+
+Current Python OCR Flow
+-----------------------
+The current local verifier is implemented in the Python identity service.
+
+The Python service receives the image and profile from:
+
+React app -> Express backend -> Python verifier
+
+Endpoint:
+
+POST /verify
+
+The Python verifier performs these steps:
+
+1. Decode image
+
+   The service receives base64 image data and decodes it into image bytes.
+
+2. Image preprocessing / cleaning
+
+   Before OCR, the service creates multiple cleaned versions of the image:
+
+   - grayscale conversion
+   - upscale for small images
+   - denoise
+   - sharpen
+   - contrast enhancement
+   - adaptive threshold
+   - Otsu threshold
+   - deblur-style sharpening
+
+   The purpose is to improve readability for low-quality photos.
+
+3. Multi-pass OCR
+
+   EasyOCR is run on several preprocessed image versions.
+
+   The system scores OCR passes by useful identity-document signals, not only OCR
+   confidence. Useful signals include:
+
+   - known document words: PASSPORT, DRIVER LICENSE, IDENTIFICATION CARD, EMPLOYMENT AUTHORIZATION
+   - date fields
+   - document numbers
+   - MRZ text
+   - barcode text
+   - name-like text
+
+4. Barcode and MRZ parsing
+
+   If available, barcode parsing is used for driver license/state ID back sides.
+
+   MRZ parsing is used for:
+
+   - passport books
+   - passport cards
+   - permanent resident cards
+   - employment authorization cards
+
+   MRZ is often more reliable than visible-label OCR, so it gets priority when present.
+
+5. Document type detection
+
+   The verifier determines the actual document type from visible text and machine-readable
+   data.
+
+   Examples:
+
+   - "DRIVER LICENSE" -> drivers-license
+   - "STATE IDENTIFICATION CARD" -> state-id
+   - passport MRZ starting with "P<USA" -> passport
+   - "PASSPORT CARD" or card MRZ -> passport-card
+   - "PERMANENT RESIDENT" -> permanent-resident-card
+   - "EMPLOYMENT AUTHORIZATION", "FORM I-766", "IOE...", or EAD MRZ -> employment-authorization-card
+
+6. Side detection
+
+   The verifier checks whether the image is front or back.
+
+   Examples:
+
+   - Front driver license: name, photo, DOB, address, issue/expiry labels.
+   - Back driver license: PDF417 barcode or AAMVA fields such as DCS, DAC, DBB, DBA.
+   - Front passport: photo page with name/DOB or passport MRZ.
+   - Back passport/supporting page: visa/stamp/supporting page.
+   - Front EAD: surname, given name, USCIS#, category, DOB, card expires.
+   - Back EAD: Form I-766 text, barcode, MRZ-like lines.
+
+7. Side mismatch check
+
+   If the user uploads the wrong side into the wrong slot, the verifier blocks with a clear
+   message.
+
+   Example:
+
+   User is asked for front side, but uploads back side:
+
+   "This image looks like the back side, but it was uploaded in the front side slot. Upload the front side image in this slot."
+
+   User is asked for back side, but uploads front side:
+
+   "This image looks like the front side, but it was uploaded in the back side slot. Upload the back side image in this slot."
+
+8. Field extraction
+
+   The verifier extracts document fields depending on the document type.
+
+   Common extracted fields:
+
+   - first_name
+   - middle_name
+   - last_name
+   - full_name_raw
+   - date_of_birth
+   - issue_date
+   - expiration_date
+   - document_number
+   - card_number
+   - a_number
+   - category
+   - address_line1
+   - city
+   - state
+   - zip
+
+9. Profile comparison
+
+   The extracted document fields are compared to the profile fields sent by the app.
+
+   Checked profile fields:
+
+   - legalFirstName
+   - legalMiddleName when present/relevant
+   - legalLastName
+   - dateOfBirth
+   - address, when available and readable
+
+10. Expiration check
+
+   The verifier checks whether the document is expired.
+
+   It also avoids confusing issue date and expiration date.
+
+   Example:
+
+   Texas state ID text:
+
+   4a. ISSUED 4b. EXPIRES 05/20/2024 05/20/2032
+
+   Correct extraction:
+
+   - issue_date = 2024-05-20
+   - expiration_date = 2032-05-20
+
+11. Image quality check
+
+   The verifier only tells the user "low quality" when confidence is high.
+
+   Low quality can mean:
+
+   - too low resolution
+   - blurry
+   - severe glare
+   - too dark or overexposed
+   - cropped document
+   - key fields unreadable
+
+   If image quality is the problem, the verifier should not falsely say the name or DOB
+   mismatches. It should say the document could not be read reliably.
+
+12. Structured response
+
+   The verifier returns a JSON object with:
+
+   - documentDetected
+   - detectedDocumentType
+   - documentTypeMatch
+   - detectedSide
+   - extractedFields
+   - validationResults
+   - flags
+   - complianceEligibility
+   - nextAction
+   - humanReviewRequired
+   - userMessage
+
+
+n8n + ChatGPT Workflow
+---------------------
+The n8n version replaces local Python OCR with an automation workflow:
+
+App -> Express backend -> n8n webhook -> Google Drive upload -> ChatGPT vision agent -> normalized response -> app
+
+Detailed workflow:
+
+1. App sends identity verification request
+
+   The app sends:
+
+   - requestId
+   - imageBase64
+   - selectedDocumentType
+   - documentSide
+   - profile
+
+2. n8n webhook receives request
+
+   The webhook endpoint receives the JSON payload.
+
+3. n8n validates required fields
+
+   Required fields:
+
+   - requestId
+   - imageBase64
+   - selectedDocumentType
+   - documentSide
+   - profile
+
+   If missing, n8n returns a structured error response.
+
+4. n8n prepares image binary
+
+   The base64 image is converted to binary data so it can be uploaded.
+
+5. n8n uploads image to Google Drive
+
+   The image is saved with a filename like:
+
+   requestId-selectedDocumentType-documentSide.png
+
+6. n8n sends image and profile to ChatGPT
+
+   The ChatGPT agent receives:
+
+   - the uploaded image / file reference
+   - selectedDocumentType
+   - documentSide
+   - profile name and DOB
+   - detailed prompt instructions
+
+7. ChatGPT analyzes the document
+
+   ChatGPT performs the same conceptual steps:
+
+   - detect document
+   - detect document type
+   - detect side
+   - extract fields
+   - compare against profile
+   - check expiration
+   - check image quality
+   - return strict JSON
+
+8. n8n normalizes ChatGPT response
+
+   n8n ensures the response has the expected fields:
+
+   - requestId
+   - source
+   - googleDriveFileId
+   - userMessage
+   - analysis
+
+9. n8n returns response to Express/app
+
+   The app reads flags and nextAction to decide what to show next.
+
+
+Document-Specific OCR Functionality
+-----------------------------------
+
+US Driver's License
+-------------------
+The verifier looks for state driver license layouts.
+
+Front side:
+
+- state name
+- "DRIVER LICENSE" or "DRIVER'S LICENSE"
+- temporary driver license text
+- name
+- DOB
+- issue date
+- expiration date
+- license number
+- address
+- portrait/photo
+
+Back side:
+
+- PDF417 barcode
+- AAMVA fields:
+  - DCS last name
+  - DAC first name
+  - DAD middle name
+  - DBB DOB
+  - DBA expiration
+  - DBD issue
+  - DAQ document number
+  - DAG street
+  - DAI city
+  - DAJ state
+  - DAK zip
+
+Checks:
+
+- Is it truly a driver license?
+- Does selected type match?
+- Is correct side uploaded?
+- Does name match profile?
+- Does DOB match profile?
+- Is expiration valid?
+- Is address readable/matching when needed?
+
+
+US State ID Card
+----------------
+The verifier looks for non-driver identification cards.
+
+Front side:
+
+- "STATE IDENTIFICATION CARD"
+- "IDENTIFICATION CARD"
+- "ID NUMBER"
+- state name
+- name
+- DOB
+- address
+- issue/expiration dates
+
+Back side:
+
+- barcode or AAMVA data.
+
+Checks are similar to driver license.
+
+Important:
+
+For state IDs, the parser must not confuse issue date and expiration date.
+
+Example:
+
+4a. ISSUED 4b. EXPIRES 05/20/2024 05/20/2032
+
+Means:
+
+- issued = 2024-05-20
+- expires = 2032-05-20
+
+
+US Passport Book
+----------------
+The verifier uses passport photo page text and MRZ.
+
+Front/photo page:
+
+- "PASSPORT"
+- "THE UNITED STATES OF AMERICA"
+- Type P
+- Code USA
+- passport number
+- surname
+- given names
+- nationality
+- DOB
+- place of birth
+- date of issue
+- date of expiration
+- MRZ starting with P<USA
+
+Back/supporting pages:
+
+- visa pages
+- endorsement pages
+- stamps
+- passport number/barcode
+
+Checks:
+
+- Passport book must be detected as passport, not passport-card.
+- MRZ should be used first when visible.
+- Name and DOB must match profile.
+- Expiration must be valid.
+
+
+US Passport Card
+----------------
+The verifier detects wallet-size passport cards.
+
+Front side:
+
+- "PASSPORT CARD"
+- surname
+- given names
+- passport card number
+- nationality USA
+- DOB
+- issue/expiration dates
+
+Back side:
+
+- MRZ-like card text.
+
+Checks:
+
+- Must not be confused with passport book.
+- Name/DOB/expiration checked when readable.
+- If image is too low-res to read name, request clearer image instead of false mismatch.
+
+
+Permanent Resident Card
+-----------------------
+The verifier detects Green Cards.
+
+Front side:
+
+- "PERMANENT RESIDENT"
+- surname
+- given name
+- USCIS#
+- A-number
+- country of birth
+- DOB
+- card expires
+- category
+- resident since
+
+Back side:
+
+- MRZ-style lines.
+
+Checks:
+
+- Type match.
+- Side match.
+- Name and DOB match profile.
+- Card is not expired.
+- A-number/category extracted when readable.
+
+
+Employment Authorization Document / EAD / Form I-766
+----------------------------------------------------
+The verifier detects US Employment Authorization Documents.
+
+Front side:
+
+- "UNITED STATES OF AMERICA"
+- "EMPLOYMENT AUTHORIZATION"
+- "Form I-766"
+- surname
+- given name
+- USCIS#
+- category
+- card#
+- terms and conditions
+- DOB
+- sex
+- country of birth
+- valid from
+- card expires
+- often says "NOT VALID FOR REENTRY TO U.S."
+
+Back side:
+
+- "FORM I-766"
+- barcode
+- text saying the card is not proof of citizenship/permanent residence
+- MRZ-like lines
+
+Example EAD back MRZ:
+
+IAUSA2169485377IOE0924932981<9
+9611283F2905280NGA<<<<<<<<<<<9
+AKABUEZE<<MAUREEN<ONYINE<<<<<<
+
+Extracted from this:
+
+- A-number: 216948537
+- card number: IOE0924932981
+- DOB: 1996-11-28
+- expiration: 2029-05-28
+- country: NGA
+- last name: AKABUEZE
+- first name: MAUREEN
+- middle name: ONYINE
+
+Checks:
+
+- Type match.
+- Side match.
+- Name and DOB match profile.
+- Card expiration is valid.
+- EAD should not be confused with Green Card.
+
+
+US Military ID
+--------------
+The verifier checks for:
+
+- United States Armed Forces
+- Common Access Card
+- Department of Defense
+- DoD ID
+- name
+- expiration
+- service/status fields
+
+Checks:
+
+- Type match.
+- Name and DOB when visible.
+- Expiration when visible.
+- Human review when fields are not visible but document appears valid.
+
+
+Response Fields Used by the App
+-------------------------------
+The app mainly relies on:
+
+documentDetected:
+
+- false means no supported document was found.
+
+detectedDocumentType:
+
+- actual detected type.
+
+documentTypeMatch:
+
+- false means user selected one type but uploaded another.
+
+detectedSide:
+
+- actual side shown by image.
+
+flags:
+
+- list of INFO/WARNING/CRITICAL issues.
+
+complianceEligibility:
+
+- true means no critical blocker.
+
+nextAction:
+
+- CONTINUE
+- HALT_VERIFICATION
+- REQUEST_BACK_IMAGE
+- REQUEST_FRONT_IMAGE
+- RETAKE_PHOTO
+
+userMessage:
+
+- the message shown to the user.
+
+
+Common App Flow Decisions
+-------------------------
+If all checks pass:
+
+- complianceEligibility = true
+- nextAction = CONTINUE
+- message: "This ID looks good and matches your profile."
+
+If no document detected:
+
+- nextAction = RETAKE_PHOTO
+- message: "We could not detect a supported US government ID. Put the document inside the frame and try again."
+
+If wrong type selected:
+
+- nextAction = HALT_VERIFICATION
+- message tells user detected type and selected type.
+
+If front/back swapped:
+
+- nextAction = REQUEST_FRONT_IMAGE or REQUEST_BACK_IMAGE
+- message tells user which side was uploaded and which side is needed.
+
+If low quality:
+
+- nextAction = RETAKE_PHOTO
+- message asks user to retake closer, flat, well-lit, and in focus.
+
+If name mismatch:
+
+- nextAction = HALT_VERIFICATION
+- message asks user to correct legal name or use their own ID.
+
+If DOB mismatch:
+
+- nextAction = HALT_VERIFICATION
+- message asks user to correct DOB or use their own ID.
+
+If expired:
+
+- nextAction = HALT_VERIFICATION
+- message asks user to upload a current document.
+
+
+Why Structured JSON Matters
+---------------------------
+The app should not parse a free-form GPT response.
+
+The n8n ChatGPT node should return strict JSON because:
+
+- the app needs booleans for flow control
+- errors must map to stable messages
+- frontend needs consistent flags
+- testing requires predictable output
+- support/human review needs a clear reason
+
+The prompt file `identity-verification-chatgpt-agent-prompt.txt` defines the exact JSON
+schema the ChatGPT agent should return.
+
+
+Important Design Principle
+--------------------------
+The verifier should guide users, not punish OCR uncertainty.
+
+Correct behavior:
+
+- If field is readable and different -> mismatch.
+- If field is not readable -> ask for clearer image.
+- If wrong side uploaded -> ask for correct side.
+- If wrong document type uploaded -> ask user to select correct type or retake.
+- If document is expired -> ask for current document.
+
+Incorrect behavior:
+
+- Saying name mismatch when OCR could not read the name.
+- Saying DOB mismatch when DOB is blurry.
+- Saying document expired because issue date was mistaken for expiration date.
+- Saying passport card when the image is a passport book.
+- Saying no document when an EAD or Green Card is visible but OCR is noisy.

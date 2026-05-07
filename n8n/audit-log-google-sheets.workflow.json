@@ -1,0 +1,115 @@
+{
+  "name": "Onboarding Audit Log - Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "audit-log",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "audit-webhook-001",
+      "name": "Audit Log Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [300, 300],
+      "webhookId": "audit-log"
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\n\n// Friendly flag summary: turn [{code,message},...] into readable text\nfunction friendlyFlags(flags) {\n  if (!Array.isArray(flags) || !flags.length) return '';\n  return flags.map(f => f.code ? `${f.code}: ${f.message || ''}` : String(f)).join(' | ');\n}\n\nconst row = {\n  'Timestamp':           event.timestamp || new Date().toISOString(),\n  'Session ID':          event.sessionId || '',\n  'Record Kind':         event.recordKind || '',\n  'Flow':                event.flow || '',\n  'Attempt #':           event.attemptNumber || '',\n  'Result':              event.resultStatus || '',\n  'Side':                event.side || '',\n  'First Name':          event.profile?.legalFirstName || event.profile?.firstName || '',\n  'Last Name':           event.profile?.legalLastName || event.profile?.lastName || '',\n  'Date of Birth':       event.profile?.dateOfBirth || '',\n  'Email':               event.profile?.email || '',\n  'Phone':               event.profile?.phone || '',\n  'Doc Type (Selected)': event.selectedDocumentType || '',\n  'I-9 List':            event.selectedList || '',\n  'Doc ID':              event.selectedDocumentId || '',\n  'Doc Label':           event.selectedDocumentLabel || '',\n  'Immigration Status':  event.immigrationStatus || event.i9?.citizenshipStatus || '',\n  'Document Path':       event.documentPath || event.i9?.documentPath || '',\n  'Drive File ID':       event.googleDriveFileId || '',\n  'Drive File URL':      event.googleDriveFileUrl || '',\n  'User Message':        event.userMessage || '',\n  'Flags (JSON)':        friendlyFlags(event.flags),\n  'ID Final Status':     event.identity?.finalStatus || '',\n  'ID Attempt Count':    event.identity?.attemptCount || '',\n  'ID Drive Links':      (event.identity?.driveLinks || []).join('\\n'),\n  'I-9 Final Status':    event.i9?.finalStatus || '',\n  'I-9 Attempt Count':   event.i9?.attemptCount || '',\n  'I-9 Drive Links':     (event.i9?.driveLinks || []).join('\\n'),\n  'I-9 Selected Docs':   (event.i9?.selectedDocuments || []).join(', '),\n  'Rating (1\\u20135)':   event.feedback?.rating || '',\n  'Feedback Comments':   event.feedback?.comments || ''\n};\nreturn [{ json: row }];"
+      },
+      "id": "audit-normalize-001",
+      "name": "Normalize Audit Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "13ykmz2E-3fYnZOmMEDZAbFwuVSrOGSuKZmu1F8M13XQ"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "audit_log"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "audit-append-sheet-001",
+      "name": "Append Audit Row To Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [820, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "a58028CP6zWXvdeS",
+          "name": "LB W2 I9 Sheet"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { logged: true, sessionId: $('Normalize Audit Row').item.json.sessionId, recordKind: $('Normalize Audit Row').item.json.recordKind } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "audit-respond-001",
+      "name": "Respond Logged",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1080, 300]
+    }
+  ],
+  "connections": {
+    "Audit Log Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Audit Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Audit Row": {
+      "main": [
+        [
+          {
+            "node": "Append Audit Row To Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Audit Row To Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Respond Logged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "audit-log-google-sheets-v1",
+  "triggerCount": 1
+}

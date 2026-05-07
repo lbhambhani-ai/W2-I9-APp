@@ -1,0 +1,10 @@
+{
+  "requestId": "test-invalid-001",
+  "selectedDocumentType": "drivers-license",
+  "documentSide": "front",
+  "profile": {
+    "legalFirstName": "Test",
+    "legalLastName": "User",
+    "dateOfBirth": "1990-01-01"
+  }
+}
