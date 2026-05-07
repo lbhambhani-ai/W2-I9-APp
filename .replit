@@ -21,5 +21,3 @@ externalPort = 8001
 
 [agent]
 expertMode = true
-
-[userenv]
