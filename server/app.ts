@@ -228,15 +228,14 @@ export function createServer() {
       }
       console.log(`[python-ocr] Fallback succeeded for ${input.requestId}`);
       const normalizedAnalysis = normalizeN8nAnalysis(pythonResult.analysis as Record<string, unknown>, input);
-      const pythonOcrResponse: IdentityVerificationAnalyzeResponse = {
+      response.json({
         requestId: input.requestId,
-        source: "python-ocr-fallback",
+        source: "python-ocr-fallback" as const,
         googleDriveFileId: undefined,
         googleDriveFileUrl: undefined,
         userMessage: pythonResult.userMessage as string || normalizedAnalysis.reviewReason || "Document analysis completed.",
         analysis: normalizedAnalysis
-      };
-      response.json(pythonOcrResponse);
+      } satisfies IdentityVerificationAnalyzeResponse);
     } catch (pythonError) {
       const msg = pythonError instanceof Error ? pythonError.message : String(pythonError);
       console.log(`[python-ocr] Fallback also failed for ${input.requestId}: ${msg}`);
