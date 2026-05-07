@@ -7,6 +7,12 @@
 
 set -e
 
+# The Nix environment provides a pip.conf (via PIP_CONFIG_FILE) that sets
+# "user = yes" globally. Inside a virtualenv, user site-packages are disabled,
+# so every pip call fails with "Can not perform a --user install".
+# Unsetting PIP_CONFIG_FILE lets pip use its built-in defaults instead.
+unset PIP_CONFIG_FILE
+
 VENV_DIR=".venv"
 REQUIREMENTS="identity_service/requirements.txt"
 
