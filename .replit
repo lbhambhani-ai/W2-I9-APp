@@ -23,3 +23,14 @@ externalPort = 8001
 expertMode = true
 
 [userenv]
+<<<<<<< HEAD
+=======
+
+[userenv.shared]
+IDENTITY_VERIFICATION_SERVICE_URL = "https://instawork.app.n8n.cloud/webhook/identity/verify-document"
+I9_VERIFICATION_URL = "https://instawork.app.n8n.cloud/webhook/i9/verify-document"
+AUDIT_LOG_WEBHOOK_URL = "https://instawork.app.n8n.cloud/webhook/audit-log"
+ENABLE_PYTHON_OCR = "false"
+PYTHON_OCR_PORT = "8001"
+PYTHON_OCR_URL = "http://localhost:8001/verify"
+>>>>>>> 1fe4c61 (Saved progress at the end of the loop)
