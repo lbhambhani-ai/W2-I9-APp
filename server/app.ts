@@ -45,11 +45,17 @@ function normalizeN8nAnalysis(raw: Record<string, unknown>, input: IdentityVerif
     ? raw.flags.map((f: unknown) => typeof f === "string" ? { severity: "CRITICAL" as const, code: f, message: f } : f as { severity: "CRITICAL" | "WARNING" | "INFO"; code: string; message: string })
     : [];
 
-  const complianceEligibility = typeof raw.complianceEligibility === "boolean"
+  const rawCompliance = typeof raw.complianceEligibility === "boolean"
     ? raw.complianceEligibility
     : typeof raw.complianceEligibility === "object" && raw.complianceEligibility !== null
       ? Boolean((raw.complianceEligibility as Record<string, unknown>).canContinue)
       : Boolean(bc.canContinue);
+
+  // Any CRITICAL flag must block continuation regardless of what the model returned for complianceEligibility
+  const hasCriticalFlag = Array.isArray(raw.flags) && raw.flags.some(
+    (f: unknown) => typeof f === "object" && f !== null && (f as Record<string, unknown>).severity === "CRITICAL"
+  );
+  const complianceEligibility = rawCompliance && !hasCriticalFlag;
 
   const docTypeLabels: Record<string, string> = {
     "drivers-license": "US Driver's License",
