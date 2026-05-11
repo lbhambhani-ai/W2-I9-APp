@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Build output
-dist/
+# dist/ — included for Replit deployment (no build step needed)
 
 # Environment variables
 .env

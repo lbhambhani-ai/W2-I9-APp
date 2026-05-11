@@ -1,4 +1,4 @@
-run = "npm run build && npm start"
+run = "npm start"
 entrypoint = "server/index.ts"
 modules = ["nodejs-20", "python-3.11"]
 
@@ -7,7 +7,7 @@ channel = "stable-24_05"
 packages = ["python311", "python311Packages.pip", "libGL", "zbar", "stdenv.cc.cc.lib", "gcc-unwrapped"]
 
 [deployment]
-run = ["sh", "-c", "npm run build && npm start"]
+run = ["sh", "-c", "npm start"]
 build = ["sh", "-c", "npm install && if [ \"$ENABLE_PYTHON_OCR\" = \"true\" ]; then bash setup-python.sh; else echo 'Skipping Python OCR setup because ENABLE_PYTHON_OCR is not true'; fi"]
 deploymentTarget = "gce"
 
