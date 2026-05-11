@@ -14,7 +14,7 @@ import type {
   InitialIdentity,
   ValidationResult
 } from "../../shared/types";
-import { googleDriveFileUrl, summarizeAuditAttempts } from "../../shared/audit";
+import { buildReminderIssues, googleDriveFileUrl, summarizeAuditAttempts, type ReminderIssue } from "../../shared/audit";
 import {
   governmentIdTypeLabel,
   normalizeSsn,
@@ -76,7 +76,7 @@ const onboardingScreens = [
   "W-2 Intro",
   "Identity Verification",
   "Government ID",
-  "Verify Profile Details"
+  "Review Profile Details"
 ];
 
 const US_GOVERNMENT_ID_TYPES = [
@@ -301,12 +301,15 @@ function selectedI9DocumentLabels(i9: I9State) {
 }
 
 export function App() {
-  const [step, setStep] = useState(0);
+  const directScreen = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("screen")
+    : null;
+  const [step, setStep] = useState(() => directScreen === "feedback" ? onboardingScreens.length + 1 : 0);
   const [identity, setIdentity] = useState<InitialIdentity>(defaultIdentity);
   const [profile, setProfile] = useState<ConfirmedW2Profile>(defaultProfile);
   const [selfieImage, setSelfieImage] = useState<string | null>(null);
   const [w2Validation, setW2Validation] = useState<ValidationResult | null>(null);
-  const [workBrightStep, setWorkBrightStep] = useState(0);
+  const [workBrightStep, setWorkBrightStep] = useState(() => directScreen === "feedback" ? 6 : 0);
   const [finalStatus, setFinalStatus] = useState("");
   const [sessionId] = useState(createSessionId);
   const [auditAttempts, setAuditAttempts] = useState<AuditAttemptEvent[]>([]);
@@ -405,6 +408,7 @@ export function App() {
           profile={profile}
           currentStep={workBrightStep}
           finalStatus={finalStatus}
+          auditAttempts={auditAttempts}
           onNext={() => setWorkBrightStep((current) => current + 1)}
           onBack={() => setWorkBrightStep((current) => Math.max(current - 1, 0))}
           onSubmit={submitWorkBright}
@@ -1426,13 +1430,14 @@ function W2OnboardingPromptScreen({ onNext }: { onNext: () => void }) {
     <section className="w2-start-screen" aria-label="W-2 onboarding start">
       <div className="w2-start-content no-scroll">
         <h1>W-2 onboarding</h1>
-        <div className="w2-document-icon" aria-hidden="true">
-          <span className="w2-clip" />
-          <span className="w2-line long" />
-          <span className="w2-line short" />
-          <span className="w2-pencil" />
+        <div className="w2-signup-card">
+          <p className="w2-shift-eyebrow">100+ shifts near you</p>
+          <h2>Sign up for W-2 onboarding</h2>
+          <p>
+            There are over <strong>100+ W-2 shifts</strong> in your area. Complete your paperwork to unlock more
+            opportunities.
+          </p>
         </div>
-        <p>Unlock more shifts by completing your paperwork for W-2 shifts.</p>
         <button className="w2-start-button" onClick={onNext}>Start onboarding</button>
       </div>
       <InstaworkBottomNav />
@@ -1441,22 +1446,12 @@ function W2OnboardingPromptScreen({ onNext }: { onNext: () => void }) {
 }
 
 function InstaworkBottomNav() {
-  const tabs = [
-    { icon: "◷", label: "Shifts" },
-    { icon: "▢", label: "Jobs" },
-    { icon: "▣", label: "My work" },
-    { icon: "▱", label: "Messages" },
-    { icon: "◉", label: "Profile", current: true }
-  ];
-
   return (
     <nav className="instawork-bottom-tabs" aria-label="Instawork tabs">
-      {tabs.map((tab) => (
-        <span key={tab.label} className={tab.current ? "active" : ""} aria-current={tab.current ? "page" : undefined}>
-          <span className="tab-icon" aria-hidden="true">{tab.icon}</span>
-          {tab.label}
-        </span>
-      ))}
+      <span className="active" aria-current="page">
+        <span className="tab-icon" aria-hidden="true">◉</span>
+        Profile
+      </span>
     </nav>
   );
 }
@@ -2621,27 +2616,23 @@ function W2ProfileScreen({
     <section className="w2-profile-review-screen">
       <button className="identity-close w2-profile-close" onClick={onBack} aria-label="Back">×</button>
       <div className="w2-profile-review-content">
-        <h1>Verify your profile details</h1>
+        <h1>Review your profile details</h1>
         <p>This information may be passed to local, state, and federal governments to complete the W-2 process.</p>
         <W2ReviewRow
           label="Name"
           value={fullName || initialName}
-          onEdit={() => setEditingField("name")}
         />
         <W2ReviewRow
           label="Birthdate"
           value={profile.dateOfBirth ? formatLongDate(profile.dateOfBirth) : "None"}
-          onEdit={() => setEditingField("dob")}
         />
         <W2ReviewRow
           label="Email address"
           value={profile.email || "None"}
-          onEdit={() => setEditingField("email")}
         />
         <W2ReviewRow
           label="Phone number"
           value={profile.phone || "None"}
-          onEdit={() => setEditingField("phone")}
         />
         <W2ReviewRow
           label="SSN"
@@ -2674,13 +2665,13 @@ function W2ReviewRow({
 }: {
   label: string;
   value: string;
-  onEdit: () => void;
+  onEdit?: () => void;
 }) {
   return (
     <section className="w2-review-row">
       <div className="w2-review-row-header">
         <strong>{label}</strong>
-        <button onClick={onEdit}>Edit</button>
+        {onEdit && <button onClick={onEdit}>Edit</button>}
       </div>
       <p>{value}</p>
     </section>
@@ -2691,6 +2682,7 @@ function WorkBright({
   profile,
   currentStep,
   finalStatus,
+  auditAttempts,
   onNext,
   onBack,
   onSubmit,
@@ -2700,6 +2692,7 @@ function WorkBright({
   profile: ConfirmedW2Profile;
   currentStep: number;
   finalStatus: string;
+  auditAttempts: AuditAttemptEvent[];
   onNext: () => void;
   onBack: () => void;
   onSubmit: () => void;
@@ -3036,9 +3029,15 @@ function WorkBright({
     />;
   }
 
-  /* ---- Step 4: Review and Submit ---- */
-  /* ---- Step 5: Feedback & Rating ---- */
+  /* ---- Step 5: Personalized pre-app reminders ---- */
   if (currentStep === 5) {
+    return wbShell(null, (
+      <PreAppReminderScreen issues={buildReminderIssues(auditAttempts)} />
+    ), <button onClick={onNext}>I understand, continue</button>);
+  }
+
+  /* ---- Step 6: Feedback & Rating ---- */
+  if (currentStep === 6) {
     return (
       <section className="workbright-browser-screen">
         <div className="workbright-browser-bar">
@@ -3128,11 +3127,58 @@ function WorkBright({
   );
 }
 
+function PreAppReminderScreen({ issues }: { issues: ReminderIssue[] }) {
+  const reminders = issues.length > 0
+    ? issues
+    : [
+        {
+          label: "Keep your real submission consistent",
+          detail: "No repeated blocking mistakes were found in your simulation logs.",
+          fix: "Use your legal profile details, select the exact document type, and upload clear front/back photos when requested."
+        }
+      ];
+
+  return (
+    <div className="preapp-reminder-screen">
+      <div className="preapp-success-mark" aria-hidden="true">&#x2713;</div>
+      <p className="preapp-eyebrow">Simulation complete</p>
+      <h1>Before you continue to the app</h1>
+      <p className="preapp-intro">
+        Based on your practice attempts, here are the things to avoid when you submit your real W-2 and I-9 onboarding.
+      </p>
+
+      <div className="preapp-log-card" aria-label="Personalized reminders from simulation logs">
+        <div className="preapp-log-header">
+          <span>From your simulation logs</span>
+          <strong>{issues.length || 1} reminder{(issues.length || 1) > 1 ? "s" : ""}</strong>
+        </div>
+        <div className="preapp-issue-list">
+          {reminders.map((issue) => (
+            <div className="preapp-issue" key={issue.label}>
+              <span className="preapp-issue-icon" aria-hidden="true">!</span>
+              <div>
+                <h2>{issue.label}</h2>
+                <p>{issue.detail}</p>
+                <strong>{issue.fix}</strong>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <p className="preapp-note">
+        In the app, submit the same corrected information and documents that were verified here. Avoid repeating the earlier mistakes so your W-2 onboarding can be completed smoothly.
+      </p>
+    </div>
+  );
+}
+
 function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: string) => void }) {
   const [rating, setRating] = useState(0);
   const [hoveredStar, setHoveredStar] = useState(0);
   const [feedback, setFeedback] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const instaworkDeepLink = "instawork://profile/w2-onboarding";
 
   function handleSubmit() {
     onSubmit(rating, feedback);
@@ -3145,7 +3191,7 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
         <div className="feedback-success-icon">&#x2714;</div>
         <h1>Thank you for your feedback!</h1>
         <p className="feedback-thankyou">
-          Your response has been recorded. We appreciate you taking the time to complete this simulation.
+          Your feedback was submitted for this simulation. Your real W-2 onboarding still needs to be completed in the Instawork app.
         </p>
         <div className="feedback-summary-card">
           <div className="feedback-summary-row">
@@ -3161,6 +3207,15 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
             </div>
           )}
         </div>
+        <div className="app-deeplink-card submitted">
+          <div className="deeplink-badge" aria-hidden="true"></div>
+          <div className="deeplink-copy">
+            <span>Final step</span>
+            <strong>Go back to the Instawork app</strong>
+            <p>Submit the same corrected information and documents you verified in this simulation.</p>
+          </div>
+          <a href={instaworkDeepLink}>Open Instawork <span className="link-arrow">&#x2192;</span></a>
+        </div>
       </div>
     );
   }
@@ -3169,9 +3224,18 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
     <div className="feedback-screen">
       <h1>How was your experience?</h1>
       <p className="feedback-subtitle">
-        In a real scenario, your Form I-9 would now be sent to an admin for review.
-        Before you go, we'd love to hear your thoughts on this W-2 and I-9 onboarding simulation.
+        Before you return to the Instawork app, we'd love to hear whether this simulation helped you understand the W-2 and I-9 onboarding flow.
       </p>
+
+      <div className="simulation-notice-card">
+        <div className="simulation-notice-icon" aria-hidden="true">i</div>
+        <div>
+          <strong>This was only a simulation</strong>
+          <p>
+            Your W-2 onboarding is not completed here. Go back to the Instawork app and submit the same corrected details and documents you verified in this practice flow.
+          </p>
+        </div>
+      </div>
 
       <div className="feedback-question">
         <h3>How well did this simulation help you understand the W-2 and I-9 onboarding process?</h3>
@@ -3216,6 +3280,15 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
       >
         Submit feedback
       </button>
+
+      <div className="app-deeplink-card">
+        <div className="deeplink-badge" aria-hidden="true"></div>
+        <div className="deeplink-copy">
+          <strong>Go back to the Instawork app</strong>
+          <p>Use what you learned here and submit the corrected W-2 onboarding in the app.</p>
+        </div>
+        <a href={instaworkDeepLink}>Open Instawork <span className="link-arrow">&#x2192;</span></a>
+      </div>
     </div>
   );
 }
