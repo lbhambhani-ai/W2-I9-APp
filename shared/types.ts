@@ -88,8 +88,10 @@ export type GovernmentIdType =
   | "passport"
   | "passport-card"
   | "permanent-resident-card"
+  | "foreign-passport-i94"
   | "employment-authorization-card"
   | "military-id"
+  | "school-id"
   | "unknown";
 
 export type DocumentSide = "front" | "back";
@@ -182,6 +184,8 @@ export type IdentityVerificationAnalyzeResponse = {
   googleDriveFolderId?: string;
   googleDriveFileId?: string;
   googleDriveFileUrl?: string;
+  s3FileKey?: string;
+  s3FileUrl?: string;
   userMessage: string;
   analysis: IdentityVerificationAnalysis;
 };
@@ -214,6 +218,8 @@ export type AuditAttemptEvent = {
   profile?: AuditUserSnapshot;
   googleDriveFileId?: string;
   googleDriveFileUrl?: string;
+  s3FileKey?: string;
+  s3FileUrl?: string;
   fileName?: string;
   selectedList?: string;
   selectedDocumentId?: string;
@@ -231,12 +237,14 @@ export type AuditSummaryEvent = {
   identity: {
     finalStatus: AuditResultStatus | "not_started";
     attemptCount: number;
-    driveLinks: string[];
+    /** "<file name> — <AWS S3 location>" per captured document */
+    fileLinks: string[];
   };
   i9: {
     finalStatus: AuditResultStatus | "not_started";
     attemptCount: number;
-    driveLinks: string[];
+    /** "<file name> — <AWS S3 location>" per captured document */
+    fileLinks: string[];
     citizenshipStatus: string | null;
     documentPath: string | null;
     selectedDocuments: string[];
@@ -247,4 +255,40 @@ export type AuditSummaryEvent = {
   };
 };
 
-export type AuditLogEvent = AuditAttemptEvent | AuditSummaryEvent;
+export type IntercomParams = {
+  /** Instawork user ID from Intercom contact (from ?uid= URL param) */
+  intercomUserId?: string;
+  /** User email from Intercom contact (from ?email= URL param) */
+  intercomEmail?: string;
+  /** Intercom conversation / ticket ID (from ?cid= URL param) */
+  intercomConversationId?: string;
+};
+
+export type AuditSessionStartEvent = IntercomParams & {
+  recordKind: "session_start";
+  sessionId: string;
+  timestamp: string;
+  /** Full URL the user landed on */
+  landingUrl: string;
+};
+
+export type AuditFlowCompleteEvent = IntercomParams & {
+  recordKind: "flow_complete";
+  sessionId: string;
+  timestamp: string;
+  /** Rating submitted in the feedback screen */
+  feedbackRating: number;
+  /** Optional comments from the feedback screen */
+  feedbackComments: string;
+};
+
+export type AuditAppRedirectEvent = IntercomParams & {
+  recordKind: "app_redirect_click";
+  sessionId: string;
+  timestamp: string;
+  /** Where in the flow the click happened: "pre_submit" (before feedback submitted) or "post_submit" (after) */
+  context: "pre_submit" | "post_submit";
+  deepLink: string;
+};
+
+export type AuditLogEvent = AuditAttemptEvent | AuditSummaryEvent | AuditSessionStartEvent | AuditFlowCompleteEvent | AuditAppRedirectEvent;

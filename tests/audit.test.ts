@@ -8,7 +8,7 @@ describe("audit helpers", () => {
     expect(googleDriveFileUrl(undefined)).toBeUndefined();
   });
 
-  it("summarizes attempts by final status and drive links", () => {
+  it("summarizes attempts by final status and AWS file links (name + location)", () => {
     const attempts: AuditAttemptEvent[] = [
       {
         recordKind: "attempt",
@@ -20,8 +20,9 @@ describe("audit helpers", () => {
         selectedDocumentType: "drivers-license",
         resultStatus: "fail",
         userMessage: "Name mismatch",
-        googleDriveFileId: "first-fail",
-        googleDriveFileUrl: googleDriveFileUrl("first-fail")
+        fileName: "license_front_1.jpg",
+        s3FileKey: "docs/session-1/license_front_1.jpg",
+        s3FileUrl: "https://bucket.s3.amazonaws.com/docs/session-1/license_front_1.jpg"
       },
       {
         recordKind: "attempt",
@@ -33,17 +34,18 @@ describe("audit helpers", () => {
         selectedDocumentType: "drivers-license",
         resultStatus: "pass",
         userMessage: "Verified",
-        googleDriveFileId: "second-pass",
-        googleDriveFileUrl: googleDriveFileUrl("second-pass")
+        fileName: "license_front_2.jpg",
+        s3FileKey: "docs/session-1/license_front_2.jpg",
+        s3FileUrl: "https://bucket.s3.amazonaws.com/docs/session-1/license_front_2.jpg"
       }
     ];
 
     expect(summarizeAuditAttempts(attempts, "identity")).toEqual({
       finalStatus: "pass",
       attemptCount: 2,
-      driveLinks: [
-        "https://drive.google.com/file/d/first-fail/view",
-        "https://drive.google.com/file/d/second-pass/view"
+      fileLinks: [
+        "license_front_1.jpg — https://bucket.s3.amazonaws.com/docs/session-1/license_front_1.jpg",
+        "license_front_2.jpg — https://bucket.s3.amazonaws.com/docs/session-1/license_front_2.jpg"
       ]
     });
   });
@@ -57,7 +59,7 @@ describe("audit helpers", () => {
         flow: "i9",
         attemptNumber: 1,
         side: "back",
-        selectedDocumentType: "passport_card",
+        selectedDocumentType: "passport-card",
         selectedDocumentLabel: "U.S. Passport Card",
         resultStatus: "fail",
         userMessage: "This appears to be the front side. Please upload the back side.",
@@ -82,7 +84,7 @@ describe("audit helpers", () => {
         flow: "i9",
         attemptNumber: 2,
         side: "back",
-        selectedDocumentType: "passport_card",
+        selectedDocumentType: "passport-card",
         resultStatus: "pass",
         userMessage: "Verified"
       }

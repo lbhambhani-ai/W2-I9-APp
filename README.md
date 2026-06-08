@@ -1,6 +1,6 @@
 # Instawork W-2 & I-9 Onboarding Simulation
 
-A full-stack TypeScript simulation of the Instawork W-2 and I-9 onboarding flow, including WorkBright Form I-9, identity verification via Google Gemini Vision (through n8n), and a feedback/rating screen.
+A full-stack TypeScript simulation of the Instawork W-2 and I-9 onboarding flow, including WorkBright Form I-9, document validation via Google Gemini Vision (through n8n), and a feedback/rating screen.
 
 ---
 
@@ -13,9 +13,9 @@ A full-stack TypeScript simulation of the Instawork W-2 and I-9 onboarding flow,
 
 | Secret name | Value |
 |---|---|
-| `IDENTITY_VERIFICATION_SERVICE_URL` | `https://instawork.app.n8n.cloud/webhook/identity/verify-document` |
+| `DOCUMENT_VALIDATION_SERVICE_URL` | `https://instawork.app.n8n.cloud/webhook/identity/verify-document` |
 | `I9_VERIFICATION_URL` | `https://instawork.app.n8n.cloud/webhook/i9/verify-document` |
-| `IDENTITY_VERIFICATION_SERVICE_SECRET` | *(optional, shared header sent to n8n)* |
+| `DOCUMENT_VALIDATION_SERVICE_SECRET` | *(optional, shared header sent to n8n)* |
 
 The server listens on `process.env.PORT` (set automatically by Replit) and falls back to `3001` locally.
 
@@ -60,9 +60,9 @@ cp .env.example .env
 | Variable | Description | Default |
 |---|---|---|
 | `PORT` | Port the Express server listens on | `3001` |
-| `IDENTITY_VERIFICATION_SERVICE_URL` | n8n webhook for identity document verification | Instawork production n8n |
+| `DOCUMENT_VALIDATION_SERVICE_URL` | n8n webhook for identity document verification | Instawork production n8n |
 | `I9_VERIFICATION_URL` | n8n webhook for I-9 document verification | Instawork production n8n |
-| `IDENTITY_VERIFICATION_SERVICE_SECRET` | Optional shared secret header for n8n | *(empty)* |
+| `DOCUMENT_VALIDATION_SERVICE_SECRET` | Optional shared secret header for n8n | *(empty)* |
 
 ---
 
@@ -92,7 +92,7 @@ Import these into your n8n instance:
 
 | File | Purpose |
 |---|---|
-| `n8n/identity-verification-v2-workflow.json` | Identity document OCR via Gemini Vision |
+| `n8n/identity-verification-s3-native-dev.workflow.json` | Current identity document validation workflow |
 | `n8n/i9-document-verification.workflow.json` | I-9 document cross-list validation |
 | `n8n/instawork-w2-document-validation.workflow.json` | W-2 document validation |
 
@@ -102,7 +102,7 @@ Google Drive folder for uploaded images: `17N2GfPmuGpZ9OErpOwNHl_xv8L5rB9Sy`
 
 ## Key Features
 
-- **Identity Verification** — Upload US government ID, Gemini Vision checks name/DOB match
+- **Document Validation** — Upload US government ID, Gemini Vision checks name/DOB match
 - **W-2 Profile Setup** — SSN validation, duplicate detection, legal name confirmation
 - **WorkBright I-9 Simulation** — Citizenship attestation, List A / List B+C document upload with front+back, cross-list mismatch detection, real-time feedback
 - **Admin Review → Feedback** — Final rating screen (1–5 stars) after I-9 submission

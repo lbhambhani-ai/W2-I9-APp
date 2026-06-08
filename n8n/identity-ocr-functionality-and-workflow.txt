@@ -260,7 +260,7 @@ App -> Express backend -> n8n webhook -> Google Drive upload -> ChatGPT vision a
 
 Detailed workflow:
 
-1. App sends identity verification request
+1. App sends document validation request
 
    The app sends:
 
@@ -290,11 +290,15 @@ Detailed workflow:
 
    The base64 image is converted to binary data so it can be uploaded.
 
-5. n8n uploads image to Google Drive
+5. n8n uploads image to AWS S3 (upload-only IAM)
 
-   The image is saved with a filename like:
+   The image is uploaded to bucket
+   instawork-prod-ops-w2-i9-docs-dev (us-west-2) using the
+   prod-ops-n8n-w2-i9-automation-dev IAM user which has s3:PutObject only.
 
-   requestId-selectedDocumentType-documentSide.png
+   Object key pattern:
+
+   identity/<requestId>/<fileName>   (e.g. identity/req-123/drivers-license-front.png)
 
 6. n8n sends image and profile to ChatGPT
 
@@ -325,7 +329,8 @@ Detailed workflow:
 
    - requestId
    - source
-   - googleDriveFileId
+   - s3FileKey
+   - s3FileUrl
    - userMessage
    - analysis
 
@@ -678,7 +683,7 @@ The n8n ChatGPT node should return strict JSON because:
 - testing requires predictable output
 - support/human review needs a clear reason
 
-The prompt file `identity-verification-chatgpt-agent-prompt.txt` defines the exact JSON
+The prompt file `document-validation-chatgpt-agent-prompt.txt` defines the exact JSON
 schema the ChatGPT agent should return.
 
 

@@ -6,7 +6,12 @@ import {
   identityFixtures,
   ocrFixtures
 } from "../shared/fixtures";
-import { analyzeIdentityDocument } from "../shared/validation";
+import {
+  analyzeIdentityDocument,
+  documentTypeMismatchMessage,
+  governmentIdTypeLabel,
+  VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE
+} from "../shared/validation";
 import type {
   ConfirmedW2Profile,
   GovernmentIdType,
@@ -14,6 +19,45 @@ import type {
 } from "../shared/types";
 
 const today = new Date("2026-04-26T00:00:00Z");
+
+describe("governmentIdTypeLabel", () => {
+  it("labels School ID as an accepted I-9 identity document type", () => {
+    expect(governmentIdTypeLabel("school-id")).toBe("School ID with Photograph");
+  });
+
+  it.each([
+    [
+      "US Driver’s License",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Driver’s License or choose a different document type."
+    ],
+    [
+      "US State ID Card",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. State ID Card or choose a different document type."
+    ],
+    [
+      "US Passport",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Passport or choose a different document type."
+    ],
+    [
+      "US Passport Card",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Passport Card or choose a different document type."
+    ],
+    [
+      "US Permanent Resident Card",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Permanent Resident Card or choose a different document type."
+    ],
+    [
+      "US Employment Authorization Card",
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Employment Authorization Card or choose a different document type."
+    ],
+    [
+      "Foreign Passport with Form I-94",
+      "The uploaded document does not match the selected document type. Please upload a valid Foreign Passport with Form I-94 or choose a different document type."
+    ]
+  ])("formats document mismatch guidance for %s", (label, expected) => {
+    expect(documentTypeMismatchMessage(label)).toBe(expected);
+  });
+});
 
 function makeInput(overrides: {
   selectedType?: GovernmentIdType;
@@ -23,6 +67,8 @@ function makeInput(overrides: {
   documentDetectedInFrame?: boolean;
   expirationDate?: string | undefined;
   issueDate?: string;
+  nationality?: string;
+  countryOfIssuance?: string;
 } = {}) {
   return {
     userSelectedType: overrides.selectedType ?? ("drivers-license" as GovernmentIdType),
@@ -40,7 +86,9 @@ function makeInput(overrides: {
     documentAddress: documentAddressFixture,
     expirationDate: "expirationDate" in overrides ? overrides.expirationDate : documentExpirationFixture,
     issueDate: overrides.issueDate ?? documentIssueDateFixture,
-    today
+    today,
+    nationality: overrides.nationality,
+    countryOfIssuance: overrides.countryOfIssuance
   };
 }
 
@@ -85,8 +133,9 @@ describe("analyzeIdentityDocument", () => {
     expect(result.documentTypeMatch).toBe(false);
     const flag = result.flags.find((entry) => entry.code === "DOCUMENT_TYPE_MISMATCH");
     expect(flag?.severity).toBe("CRITICAL");
-    expect(flag?.message).toContain("US Passport");
-    expect(flag?.message).toContain("US Driver");
+    expect(flag?.message).toBe(
+      "The uploaded document does not match the selected document type. Please upload a valid U.S. Passport or choose a different document type."
+    );
     expect(result.complianceEligibility).toBe(false);
     expect(result.nextAction).toBe("HALT_VERIFICATION");
   });
@@ -181,5 +230,82 @@ describe("analyzeIdentityDocument", () => {
     expect(result.flags.find((entry) => entry.code === "DIGITAL_MANIPULATION_SUSPECTED")?.severity).toBe(
       "CRITICAL"
     );
+  });
+
+  it("bypasses expiry check for Venezuelan passport with nationality=VEN", () => {
+    const result = analyzeIdentityDocument(
+      makeInput({
+        selectedType: "passport",
+        ocr: { documentType: "passport" },
+        expirationDate: "2020-01-01",
+        nationality: "VEN"
+      })
+    );
+    expect(result.validationResults.expirationStatus).toBe("NOT_APPLICABLE");
+    expect(result.flags.find((f) => f.code === "DOCUMENT_EXPIRED")).toBeUndefined();
+    const bypassFlag = result.flags.find((f) => f.code === "VENEZUELAN_PASSPORT_EXPIRY_BYPASS");
+    expect(bypassFlag).toBeDefined();
+    expect(bypassFlag?.severity).toBe("INFO");
+    expect(bypassFlag?.message).toBe(VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE);
+    expect(result.complianceEligibility).toBe(true);
+  });
+
+  it("bypasses expiry check for Venezuelan passport with countryOfIssuance=VENEZUELA", () => {
+    const result = analyzeIdentityDocument(
+      makeInput({
+        selectedType: "passport",
+        ocr: { documentType: "passport" },
+        expirationDate: "2019-06-01",
+        countryOfIssuance: "VENEZUELA"
+      })
+    );
+    expect(result.validationResults.expirationStatus).toBe("NOT_APPLICABLE");
+    expect(result.flags.find((f) => f.code === "DOCUMENT_EXPIRED")).toBeUndefined();
+    expect(result.flags.find((f) => f.code === "VENEZUELAN_PASSPORT_EXPIRY_BYPASS")).toBeDefined();
+    expect(result.complianceEligibility).toBe(true);
+  });
+
+  it("does not bypass expiry for non-Venezuelan passport", () => {
+    const result = analyzeIdentityDocument(
+      makeInput({
+        selectedType: "passport",
+        ocr: { documentType: "passport" },
+        expirationDate: "2020-01-01",
+        nationality: "USA"
+      })
+    );
+    expect(result.validationResults.expirationStatus).toBe("EXPIRED");
+    expect(result.flags.find((f) => f.code === "DOCUMENT_EXPIRED")).toBeDefined();
+    expect(result.flags.find((f) => f.code === "VENEZUELAN_PASSPORT_EXPIRY_BYPASS")).toBeUndefined();
+    expect(result.complianceEligibility).toBe(false);
+  });
+
+  it("does not bypass expiry for Venezuelan driver's license (only passports)", () => {
+    const result = analyzeIdentityDocument(
+      makeInput({
+        selectedType: "drivers-license",
+        expirationDate: "2020-01-01",
+        nationality: "VEN"
+      })
+    );
+    expect(result.validationResults.expirationStatus).toBe("EXPIRED");
+    expect(result.flags.find((f) => f.code === "DOCUMENT_EXPIRED")).toBeDefined();
+    expect(result.flags.find((f) => f.code === "VENEZUELAN_PASSPORT_EXPIRY_BYPASS")).toBeUndefined();
+  });
+
+  it("still flags name mismatch on Venezuelan passport even with expiry bypass", () => {
+    const result = analyzeIdentityDocument(
+      makeInput({
+        selectedType: "passport",
+        ocr: { documentType: "passport" },
+        expirationDate: "2019-06-01",
+        nationality: "VENEZUELA",
+        profile: { legalLastName: "DifferentName" }
+      })
+    );
+    expect(result.validationResults.expirationStatus).toBe("NOT_APPLICABLE");
+    expect(result.flags.find((f) => f.code === "VENEZUELAN_PASSPORT_EXPIRY_BYPASS")).toBeDefined();
+    expect(result.flags.find((f) => f.code === "NAME_MISMATCH")).toBeDefined();
+    expect(result.complianceEligibility).toBe(false);
   });
 });

@@ -1,33 +1,66 @@
-# N8N Identity Verification — Test Setup & Run Checklist
+# N8N Document Validation & I-9 — Test Setup & Run Checklist
 
 ## Prerequisites
 
 - [ ] n8n instance running (cloud or self-hosted)
 - [ ] OpenAI API key with access to `gpt-4.1-mini` (or your chosen model)
-- [ ] Google account with access to the **Testing W2** Drive folder
+- [ ] AWS IAM credentials for the dev S3 bucket (see Step 2)
 - [ ] Python 3.9+ (only needed for the automated test runner)
 
 ---
 
-## Step 1 — Import The Workflow
+## Step 1 — Import The Workflows
 
 1. Open your n8n instance.
 2. Go to **Workflows → Import from file**.
-3. Select `n8n/identity-verification-n8n-workflow.json`.
-4. The workflow will appear as **Identity Verification - ChatGPT Vision**.
+3. Import both:
+   - `n8n/document-validation-n8n-workflow.json` → **Document Validation - ChatGPT Vision**
+   - `n8n/i9-document-verification.workflow.json` → **I-9 Document Verification**
 
 ---
 
-## Step 2 — Set Up Google Drive Credential
+## Step 2 — Set Up AWS S3 Credential (Dev)
 
-1. In n8n go to **Credentials → New → Google Drive OAuth2 API**.
-2. Follow the OAuth flow and authorize the account that owns the **Testing W2** folder.
-3. Open the imported workflow.
-4. Click the **Upload ID Image To Google Drive** node.
-5. Under **Credential**, select the Google Drive account you just created.
-6. Save the node.
+Both workflows upload documents to the dev bucket `instawork-prod-ops-w2-i9-docs-dev`
+in `us-west-2` using an IAM user with **upload-only** permissions
+(`s3:PutObject`, `s3:AbortMultipartUpload`; all other operations explicitly denied).
 
-The folder ID `1vn1OXPH2al136Us9th9LHR96nwIqHLQd` (Testing W2) is already hardcoded.
+### 2a. Create the credential in n8n
+
+1. In n8n go to **Credentials → New → AWS**.
+2. Name it exactly: **AWS S3 W2-I9 Dev**
+3. Enter the dev IAM user keys from your password manager / secure handoff:
+
+   | Field                   | Value                                              |
+   |-------------------------|----------------------------------------------------|
+   | Region                  | `us-west-2`                                        |
+   | Access Key ID           | `IV_AWS_ACCESS_KEY_ID` secure value                |
+   | Secret Access Key       | `IV_AWS_SECRET_ACCESS_KEY` secure value            |
+   | Custom Endpoints        | leave unchecked                                    |
+   | Temporary Credentials   | leave unchecked                                    |
+
+4. Click **Save**.
+
+> Production keys (for `instawork-prod-ops-w2-i9-docs`) are kept separately and
+> are not required for dev testing. Switch to those only when promoting to prod.
+
+### 2b. Confirm the workflows are wired to the credential
+
+In each imported workflow:
+
+- **Document Validation** → open the **Upload ID Image To S3** node
+- **I-9 Document Verification** → open the **Upload I9 Doc To S3** node
+
+Make sure:
+- **Bucket** = `instawork-prod-ops-w2-i9-docs-dev`
+- **Operation** = `Upload`
+- **Credential** = `AWS S3 W2-I9 Dev`
+
+Object keys are auto-generated:
+```
+identity/<requestId>/<fileName>      (Document Validation)
+i9/<requestId>/<fileName>            (I-9 Document Verification)
+```
 
 ---
 
@@ -57,13 +90,14 @@ If not set, the workflow defaults to `gpt-4.1-mini`.
 
 ---
 
-## Step 4 — Activate The Workflow
+## Step 4 — Activate The Workflows
 
-1. Open the workflow in n8n.
+1. Open each workflow in n8n.
 2. Toggle **Active** to ON (top-right switch).
-3. Copy the **Production Webhook URL** shown — it will look like:
+3. Copy the **Production Webhook URL** for each:
    ```
-   https://your-n8n.example.com/webhook/identity/verify-document
+   https://your-n8n.example.com/webhook/identity/verify-document   (Document Validation)
+   https://your-n8n.example.com/webhook/i9/verify-document         (I-9)
    ```
 
 ---
@@ -81,7 +115,8 @@ curl -s -X POST "$N8N_URL" \
   -d @n8n/test-payloads/drivers-license-front.json | python3 -m json.tool
 ```
 
-Expected: HTTP 200, `success: true`, `nextAction` set, `userMessage` set.
+Expected: HTTP 200, `success: true`, `s3FileKey` set, `s3FileUrl` set,
+`nextAction` set, `userMessage` set.
 
 ### Invalid request (missing imageBase64 — expect HTTP 400):
 ```bash
@@ -95,7 +130,7 @@ curl -s -o /dev/null -w "%{http_code}" -X POST "$N8N_URL" \
 
 ## Step 6 — Real-Image Automated Test Runner
 
-This uses the 9 real document images from the assets folder and sends them
+This uses the real document images from the assets folder and sends them
 to the live webhook, checking every field, flag, and nextAction.
 
 ```bash
@@ -115,7 +150,8 @@ The runner checks each case for:
 - `success: true`
 - `requestId` preserved
 - `source: n8n-chatgpt-vision`
-- `googleDriveFileId` populated (confirms Drive upload worked)
+- `s3FileKey` populated (confirms S3 upload worked)
+- `s3FileUrl` populated
 - `detectedDocumentType` matches expected type
 - `detectedSide` matches expected side
 - Correct `first_name`, `last_name`, `date_of_birth` extracted
@@ -152,16 +188,26 @@ echo "data:image/png;base64,$(base64 -i /path/to/photo.png | tr -d '\n')"
 
 ---
 
-## Step 8 — Check Google Drive
+## Step 8 — Verify Upload in S3
 
-After running a successful test, open the **Testing W2** folder:
-https://drive.google.com/drive/folders/1vn1OXPH2al136Us9th9LHR96nwIqHLQd
+After running a successful test, verify the file landed in the dev bucket.
 
-Verify that uploaded files appear with names like:
+The IAM user `prod-ops-n8n-w2-i9-automation-dev` is **upload-only**, so use a
+separate AWS profile (with read permissions, e.g. your SSO `instawork`
+profile from STEP 1 of the bucket setup doc) to list/inspect:
+
+```bash
+# List recent uploads under identity/
+aws s3 ls "s3://instawork-prod-ops-w2-i9-docs-dev/identity/" \
+  --recursive --profile instawork | tail -20
+
+# List recent uploads under i9/
+aws s3 ls "s3://instawork-prod-ops-w2-i9-docs-dev/i9/" \
+  --recursive --profile instawork | tail -20
 ```
-n8n-test-01-state-id-front.png
-n8n-test-03-passport-front.png
-```
+
+The webhook response also returns `s3FileKey` and `s3FileUrl`, so you can grab
+those straight from the JSON response and confirm against the bucket.
 
 ---
 
@@ -171,9 +217,14 @@ n8n-test-03-passport-front.png
 - Confirm the workflow is **Active** (not just saved).
 - Use the **Test URL** in n8n for quick manual testing before activating.
 
-### Google Drive upload fails
-- Check the credential is authorized and not expired.
-- Confirm the folder ID `1vn1OXPH2al136Us9th9LHR96nwIqHLQd` is accessible by that Google account.
+### S3 upload fails — `AccessDenied`
+- Double-check the credential is using the **dev** access keys, not the production ones.
+- Confirm the bucket name is `instawork-prod-ops-w2-i9-docs-dev`.
+- Confirm region is `us-west-2`.
+- The IAM user is `s3:PutObject` only — any non-upload op will fail by design.
+
+### S3 upload fails — `RequestTimeTooSkewed`
+- The host running n8n has clock drift. Sync NTP.
 
 ### OpenAI returns 401 Unauthorized
 - Confirm `OPENAI_API_KEY` is set in the n8n environment.
@@ -201,7 +252,8 @@ n8n-test-03-passport-front.png
   "success": true,
   "requestId": "n8n-test-01",
   "source": "n8n-chatgpt-vision",
-  "googleDriveFileId": "1AbCdEfGhIjK...",
+  "s3FileKey": "identity/n8n-test-01/state-id-front.png",
+  "s3FileUrl": "https://instawork-prod-ops-w2-i9-docs-dev.s3.us-west-2.amazonaws.com/identity/n8n-test-01/state-id-front.png",
   "userMessage": "This ID looks good and matches your profile.",
   "nextAction": "CONTINUE",
   "canContinue": true,
@@ -213,11 +265,11 @@ n8n-test-03-passport-front.png
     "detectedSide": "front",
     "documentTypeMatch": true,
     "sideMatchesSelected": true,
-    "extractedFields": { ... },
-    "fieldConfidence": { ... },
+    "extractedFields": { },
+    "fieldConfidence": { },
     "validationResults": {
-      "nameMatch": { "status": "MATCH", ... },
-      "dobMatch": { "status": "MATCH", ... },
+      "nameMatch": { "status": "MATCH" },
+      "dobMatch": { "status": "MATCH" },
       "expirationStatus": "VALID",
       "photoIntegrity": "CLEAR"
     },
@@ -234,3 +286,14 @@ n8n-test-03-passport-front.png
   }
 }
 ```
+
+---
+
+## Promoting Dev → Production
+
+When the dev workflow is verified end-to-end, swap the credential in the S3
+upload node from **AWS S3 W2-I9 Dev** to a new credential pointing at the
+production IAM user (`prod-ops-n8n-w2-i9-automation`) and change the bucket name from
+`instawork-prod-ops-w2-i9-docs-dev` to `instawork-prod-ops-w2-i9-docs`.
+
+No other workflow changes are required.

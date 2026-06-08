@@ -1,21 +1,21 @@
 {
-  "name": "Instawork Identity Verification - Drive + GPT",
+  "name": "Instawork Document Validation - Drive + GPT",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "instawork-identity-verification",
+        "path": "instawork-document-validation",
         "responseMode": "responseNode"
       },
       "id": "Webhook_IdentityVerification",
-      "name": "Identity Verification Webhook",
+      "name": "Document Validation Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [0, 0]
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\nconst required = ['requestId', 'imageBase64', 'selectedDocumentType', 'documentSide', 'profile'];\nconst missing = required.filter((key) => !body[key]);\nif (missing.length) {\n  return [{ json: {\n    requestId: body.requestId || 'missing_request_id',\n    source: 'n8n',\n    googleDriveFolderId: body.googleDriveFolderId || '1vn1OXPH2al136Us9th9LHR96nwIqHLQd',\n    userMessage: 'We could not start identity verification because required data was missing.',\n    analysis: {\n      documentDetected: false,\n      userSelectedType: body.selectedDocumentType || 'unknown',\n      userSelectedTypeLabel: 'Selected document',\n      detectedDocumentType: 'unknown',\n      detectedDocumentTypeLabel: 'Unsupported document',\n      documentTypeMatch: false,\n      detectedSide: body.documentSide || 'front',\n      extractedFields: {},\n      validationResults: {\n        nameMatch: { status: 'NOT_CHECKED' },\n        dobMatch: { status: 'NOT_CHECKED' },\n        addressMatch: { status: 'NOT_CHECKED' },\n        expirationStatus: 'UNKNOWN',\n        photoIntegrity: 'ABSENT'\n      },\n      flags: missing.map((key) => ({ severity: 'CRITICAL', code: 'MISSING_FIELD', message: `Missing required field: ${key}` })),\n      complianceEligibility: false,\n      nextAction: 'HALT_VERIFICATION',\n      humanReviewRequired: true,\n      reviewReason: 'Missing required identity verification input.'\n    }\n  }}];\n}\nconst imageBase64 = String(body.imageBase64).replace(/^data:image\\/[a-zA-Z0-9.+-]+;base64,/, '');\nreturn [{\n  json: {\n    ...body,\n    googleDriveFolderId: body.googleDriveFolderId || '1vn1OXPH2al136Us9th9LHR96nwIqHLQd',\n    uploadedFileName: `${body.requestId}-${body.selectedDocumentType}-${body.documentSide}.png`\n  },\n  binary: {\n    idImage: {\n      data: imageBase64,\n      mimeType: 'image/png',\n      fileName: `${body.requestId}-${body.selectedDocumentType}-${body.documentSide}.png`\n    }\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\nconst required = ['requestId', 'imageBase64', 'selectedDocumentType', 'documentSide', 'profile'];\nconst missing = required.filter((key) => !body[key]);\nif (missing.length) {\n  return [{ json: {\n    requestId: body.requestId || 'missing_request_id',\n    source: 'n8n',\n    s3Bucket: 'instawork-prod-ops-w2-i9-docs-dev',\n    userMessage: 'We could not start document validation because required data was missing.',\n    analysis: {\n      documentDetected: false,\n      userSelectedType: body.selectedDocumentType || 'unknown',\n      userSelectedTypeLabel: 'Selected document',\n      detectedDocumentType: 'unknown',\n      detectedDocumentTypeLabel: 'Unsupported document',\n      documentTypeMatch: false,\n      detectedSide: body.documentSide || 'front',\n      extractedFields: {},\n      validationResults: {\n        nameMatch: { status: 'NOT_CHECKED' },\n        dobMatch: { status: 'NOT_CHECKED' },\n        addressMatch: { status: 'NOT_CHECKED' },\n        expirationStatus: 'UNKNOWN',\n        photoIntegrity: 'ABSENT'\n      },\n      flags: missing.map((key) => ({ severity: 'CRITICAL', code: 'MISSING_FIELD', message: `Missing required field: ${key}` })),\n      complianceEligibility: false,\n      nextAction: 'HALT_VERIFICATION',\n      humanReviewRequired: true,\n      reviewReason: 'Missing required document validation input.'\n    }\n  }}];\n}\nconst imageBase64 = String(body.imageBase64).replace(/^data:image\\/[a-zA-Z0-9.+-]+;base64,/, '');\nreturn [{\n  json: {\n    ...body,\n    s3Bucket: 'instawork-prod-ops-w2-i9-docs-dev',\n    uploadedFileName: `${body.requestId}-${body.selectedDocumentType}-${body.documentSide}.png`\n  },\n  binary: {\n    idImage: {\n      data: imageBase64,\n      mimeType: 'image/png',\n      fileName: `${body.requestId}-${body.selectedDocumentType}-${body.documentSide}.png`\n    }\n  }\n}];"
       },
       "id": "Code_ValidateInput",
       "name": "Validate Input + Prepare Image",
@@ -26,20 +26,23 @@
     {
       "parameters": {
         "operation": "upload",
-        "name": "={{ $json.uploadedFileName }}",
-        "parents": "={{ [$json.googleDriveFolderId] }}",
-        "binaryData": true,
-        "binaryPropertyName": "idImage"
+        "bucketName": "instawork-prod-ops-w2-i9-docs-dev",
+        "fileName": "=w2/{{ $json.requestId }}/{{ $json.uploadedFileName }}",
+        "binaryPropertyName": "idImage",
+        "additionalFields": {
+          "contentType": "=image/png",
+          "storageClass": "STANDARD"
+        }
       },
-      "id": "GoogleDrive_UploadIdImage",
-      "name": "Upload ID Image To Google Drive",
-      "type": "n8n-nodes-base.googleDrive",
-      "typeVersion": 3,
+      "id": "S3_UploadIdImage",
+      "name": "Upload ID Image To S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 1,
       "position": [480, 0],
       "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Google Drive account"
+        "aws": {
+          "id": "s3-prod-ops-n8n",
+          "name": "AWS S3 W2-I9 Dev"
         }
       }
     },
@@ -56,7 +59,7 @@
             },
             {
               "role": "user",
-              "content": "Analyze this captured ID image from Google Drive. Drive file id: {{ $('Upload ID Image To Google Drive').item.json.id || $('Upload ID Image To Google Drive').item.json.fileId }}. User selected type: {{ $json.selectedDocumentType }}. Document side selected: {{ $json.documentSide }}. User profile: legal first name={{ $json.profile.legalFirstName }}, legal middle name={{ $json.profile.legalMiddleName || '' }}, legal last name={{ $json.profile.legalLastName }}, DOB={{ $json.profile.dateOfBirth }}. Return JSON with: documentDetected, detectedDocumentType, detectedDocumentTypeLabel, documentTypeMatch, detectedSide, extractedFields, validationResults, flags, complianceEligibility, nextAction, humanReviewRequired, reviewReason, userMessage, confidence."
+              "content": "Analyze this captured ID image uploaded to S3. S3 key: {{ $('Upload ID Image To S3').item.json.key || $('Upload ID Image To S3').item.json.Key }}. User selected type: {{ $json.selectedDocumentType }}. Document side selected: {{ $json.documentSide }}. User profile: legal first name={{ $json.profile.legalFirstName }}, legal middle name={{ $json.profile.legalMiddleName || '' }}, legal last name={{ $json.profile.legalLastName }}, DOB={{ $json.profile.dateOfBirth }}. Return JSON with: documentDetected, detectedDocumentType, detectedDocumentTypeLabel, documentTypeMatch, detectedSide, extractedFields, validationResults, flags, complianceEligibility, nextAction, humanReviewRequired, reviewReason, userMessage, confidence."
             }
           ]
         },
@@ -76,7 +79,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $items('Validate Input + Prepare Image')[0].json;\nconst drive = $items('Upload ID Image To Google Drive')[0].json;\nconst labels = {\n  'drivers-license': 'US Driver’s License',\n  'state-id': 'US State ID Card',\n  passport: 'US Passport',\n  'passport-card': 'US Passport Card',\n  'permanent-resident-card': 'US Permanent Resident Card',\n  'employment-authorization-card': 'US Employment Authorization Card',\n  'military-id': 'US Military ID',\n  unknown: 'Unsupported document'\n};\nconst raw = $json;\nconst detectedType = raw.detectedDocumentType || 'unknown';\nconst selectedLabel = labels[input.selectedDocumentType] || labels.unknown;\nconst detectedLabel = raw.detectedDocumentTypeLabel || labels[detectedType] || labels.unknown;\nconst documentTypeMatch = Boolean(raw.documentTypeMatch ?? detectedType === input.selectedDocumentType);\nconst flags = Array.isArray(raw.flags) ? raw.flags : [];\nif (!raw.documentDetected) {\n  flags.push({ severity: 'CRITICAL', code: 'NO_DOCUMENT_DETECTED', message: 'No supported US government ID detected. Hold the selected document inside the frame and capture the correct side.' });\n}\nif (raw.documentDetected && !documentTypeMatch) {\n  flags.push({ severity: 'CRITICAL', code: 'DOCUMENT_TYPE_MISMATCH', message: `DOCUMENT_TYPE_MISMATCH: User selected ${selectedLabel}, but image detects ${detectedLabel}. Verification halted.` });\n}\nconst critical = flags.some((flag) => flag.severity === 'CRITICAL');\nconst userMessage = raw.userMessage || (critical ? 'We found a problem with this ID. Review the feedback and retake the photo or correct your profile.' : 'This ID looks good and matches your profile.');\nreturn [{ json: {\n  requestId: input.requestId,\n  source: 'n8n',\n  googleDriveFolderId: input.googleDriveFolderId,\n  googleDriveFileId: drive.id || drive.fileId || null,\n  userMessage,\n  analysis: {\n    documentDetected: Boolean(raw.documentDetected),\n    userSelectedType: input.selectedDocumentType,\n    userSelectedTypeLabel: selectedLabel,\n    detectedDocumentType: detectedType,\n    detectedDocumentTypeLabel: detectedLabel,\n    documentTypeMatch,\n    detectedSide: raw.detectedSide || input.documentSide,\n    extractedFields: raw.extractedFields || {},\n    validationResults: raw.validationResults || {\n      nameMatch: { status: 'NOT_CHECKED' },\n      dobMatch: { status: 'NOT_CHECKED' },\n      addressMatch: { status: 'NOT_CHECKED' },\n      expirationStatus: 'UNKNOWN',\n      photoIntegrity: 'ANOMALY'\n    },\n    flags,\n    complianceEligibility: Boolean(raw.complianceEligibility ?? !critical),\n    nextAction: raw.nextAction || (critical ? 'HALT_VERIFICATION' : 'CONTINUE'),\n    humanReviewRequired: Boolean(raw.humanReviewRequired ?? critical),\n    reviewReason: raw.reviewReason || flags.find((flag) => flag.severity === 'CRITICAL')?.message\n  }\n}}];"
+        "jsCode": "const input = $items('Validate Input + Prepare Image')[0].json;\nconst s3Upload = $items('Upload ID Image To S3')[0].json;\nconst labels = {\n  'drivers-license': 'US Driver’s License',\n  'state-id': 'US State ID Card',\n  passport: 'US Passport',\n  'passport-card': 'US Passport Card',\n  'permanent-resident-card': 'US Permanent Resident Card',\n  'employment-authorization-card': 'US Employment Authorization Card',\n  'military-id': 'US Military ID',\n  unknown: 'Unsupported document'\n};\nconst raw = $json;\nconst detectedType = raw.detectedDocumentType || 'unknown';\nconst selectedLabel = labels[input.selectedDocumentType] || labels.unknown;\nconst detectedLabel = raw.detectedDocumentTypeLabel || labels[detectedType] || labels.unknown;\nconst documentTypeMatch = Boolean(raw.documentTypeMatch ?? detectedType === input.selectedDocumentType);\nconst flags = Array.isArray(raw.flags) ? raw.flags : [];\nif (!raw.documentDetected) {\n  flags.push({ severity: 'CRITICAL', code: 'NO_DOCUMENT_DETECTED', message: 'No supported US government ID detected. Hold the selected document inside the frame and capture the correct side.' });\n}\nif (raw.documentDetected && !documentTypeMatch) {\n  flags.push({ severity: 'CRITICAL', code: 'DOCUMENT_TYPE_MISMATCH', message: `DOCUMENT_TYPE_MISMATCH: User selected ${selectedLabel}, but image detects ${detectedLabel}. Verification halted.` });\n}\nconst critical = flags.some((flag) => flag.severity === 'CRITICAL');\nconst userMessage = raw.userMessage || (critical ? 'We found a problem with this ID. Review the feedback and retake the photo or correct your profile.' : 'This ID looks good and matches your profile.');\nreturn [{ json: {\n  requestId: input.requestId,\n  source: 'n8n',\n  s3FileKey: s3Upload.key || s3Upload.Key || null,\n  userMessage,\n  analysis: {\n    documentDetected: Boolean(raw.documentDetected),\n    userSelectedType: input.selectedDocumentType,\n    userSelectedTypeLabel: selectedLabel,\n    detectedDocumentType: detectedType,\n    detectedDocumentTypeLabel: detectedLabel,\n    documentTypeMatch,\n    detectedSide: raw.detectedSide || input.documentSide,\n    extractedFields: raw.extractedFields || {},\n    validationResults: raw.validationResults || {\n      nameMatch: { status: 'NOT_CHECKED' },\n      dobMatch: { status: 'NOT_CHECKED' },\n      addressMatch: { status: 'NOT_CHECKED' },\n      expirationStatus: 'UNKNOWN',\n      photoIntegrity: 'ANOMALY'\n    },\n    flags,\n    complianceEligibility: Boolean(raw.complianceEligibility ?? !critical),\n    nextAction: raw.nextAction || (critical ? 'HALT_VERIFICATION' : 'CONTINUE'),\n    humanReviewRequired: Boolean(raw.humanReviewRequired ?? critical),\n    reviewReason: raw.reviewReason || flags.find((flag) => flag.severity === 'CRITICAL')?.message\n  }\n}}];"
       },
       "id": "Code_NormalizeVerification",
       "name": "Normalize Verification Response",
@@ -97,13 +100,13 @@
     }
   ],
   "connections": {
-    "Identity Verification Webhook": {
+    "Document Validation Webhook": {
       "main": [[{ "node": "Validate Input + Prepare Image", "type": "main", "index": 0 }]]
     },
     "Validate Input + Prepare Image": {
-      "main": [[{ "node": "Upload ID Image To Google Drive", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Upload ID Image To S3", "type": "main", "index": 0 }]]
     },
-    "Upload ID Image To Google Drive": {
+    "Upload ID Image To S3": {
       "main": [[{ "node": "Extract Document With GPT", "type": "main", "index": 0 }]]
     },
     "Extract Document With GPT": {

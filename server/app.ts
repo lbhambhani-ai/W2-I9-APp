@@ -1,10 +1,14 @@
 import cors from "cors";
 import express from "express";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { validateWorkBrightSubmission } from "../shared/validation";
 import type {
+  AuditAppRedirectEvent,
+  AuditFlowCompleteEvent,
   AuditLogEvent,
+  AuditSessionStartEvent,
   ConfirmedW2Profile,
   GovernmentIdType,
   IdentityFieldComparison,
@@ -13,7 +17,7 @@ import type {
   IdentityVerificationAnalysis,
   WorkBrightSubmissionInput
 } from "../shared/types";
-import { googleDriveFileUrl } from "../shared/audit";
+import { s3FileUrlFromKey } from "../shared/audit";
 
 function normalizeFieldComparison(val: unknown): IdentityFieldComparison {
   const validStatuses = ["MATCH", "MISMATCH", "PARTIAL_MATCH", "AMBIGUOUS", "NOT_CHECKED"] as const;
@@ -65,6 +69,7 @@ function normalizeN8nAnalysis(raw: Record<string, unknown>, input: IdentityVerif
     "permanent-resident-card": "US Permanent Resident Card",
     "employment-authorization-card": "US Employment Authorization Card",
     "military-id": "US Military ID",
+    "school-id": "School ID with Photograph",
     unknown: "Unknown Document"
   };
 
@@ -130,11 +135,11 @@ function isAuditLogEvent(value: unknown): value is AuditLogEvent {
         record.identity &&
         validStatuses.includes(record.identity.finalStatus) &&
         typeof record.identity.attemptCount === "number" &&
-        Array.isArray(record.identity.driveLinks) &&
+        Array.isArray(record.identity.fileLinks) &&
         record.i9 &&
         validStatuses.includes(record.i9.finalStatus) &&
         typeof record.i9.attemptCount === "number" &&
-        Array.isArray(record.i9.driveLinks) &&
+        Array.isArray(record.i9.fileLinks) &&
         Array.isArray(record.i9.selectedDocuments) &&
         record.feedback &&
         typeof record.feedback.rating === "number" &&
@@ -144,7 +149,124 @@ function isAuditLogEvent(value: unknown): value is AuditLogEvent {
     );
   }
 
+  if (record.recordKind === "app_redirect_click") {
+    const r = record as Partial<AuditAppRedirectEvent>;
+    return Boolean(
+      r.sessionId &&
+        r.timestamp &&
+        !Number.isNaN(Date.parse(r.timestamp)) &&
+        (r.context === "pre_submit" || r.context === "post_submit") &&
+        typeof r.deepLink === "string"
+    );
+  }
+
+  if (record.recordKind === "session_start") {
+    const r = record as Partial<AuditSessionStartEvent>;
+    return Boolean(r.sessionId && r.timestamp && !Number.isNaN(Date.parse(r.timestamp)) && typeof r.landingUrl === "string");
+  }
+
+  if (record.recordKind === "flow_complete") {
+    const r = record as Partial<AuditFlowCompleteEvent>;
+    return Boolean(
+      r.sessionId &&
+        r.timestamp &&
+        !Number.isNaN(Date.parse(r.timestamp)) &&
+        typeof r.feedbackRating === "number" &&
+        r.feedbackRating >= 1 &&
+        r.feedbackRating <= 5 &&
+        typeof r.feedbackComments === "string"
+    );
+  }
+
   return false;
+}
+
+// Keep only the name + email fields the audit sheet needs. Drops DOB, phone, SSN, address, etc.
+function sanitizeProfile(profile: unknown): Record<string, unknown> | undefined {
+  if (!profile || typeof profile !== "object") return undefined;
+  const source = profile as Record<string, unknown>;
+  const clean: Record<string, unknown> = {};
+  for (const key of ["legalFirstName", "legalLastName", "firstName", "lastName", "email"]) {
+    if (typeof source[key] === "string" && source[key]) clean[key] = source[key];
+  }
+  return Object.keys(clean).length ? clean : undefined;
+}
+
+function sanitizeFlags(flags: unknown): Array<Record<string, unknown>> | undefined {
+  if (!Array.isArray(flags)) return undefined;
+  return flags
+    .filter((flag) => flag && typeof flag === "object")
+    .map((flag) => {
+      const f = flag as Record<string, unknown>;
+      return { code: f.code, severity: f.severity, message: f.message };
+    });
+}
+
+// Whitelist exactly the fields the audit log uses so no extra PII is ever forwarded to n8n.
+function sanitizeAuditEvent(event: AuditLogEvent): Record<string, unknown> {
+  const e = event as Record<string, unknown>;
+  const base: Record<string, unknown> = {
+    recordKind: e.recordKind,
+    sessionId: e.sessionId,
+    timestamp: e.timestamp
+  };
+  if (e.intercomUserId) base.intercomUserId = e.intercomUserId;
+  if (e.intercomEmail) base.intercomEmail = e.intercomEmail;
+  if (e.intercomConversationId) base.intercomConversationId = e.intercomConversationId;
+
+  switch (event.recordKind) {
+    case "attempt":
+      return {
+        ...base,
+        flow: e.flow,
+        attemptNumber: e.attemptNumber,
+        side: e.side,
+        resultStatus: e.resultStatus,
+        selectedDocumentType: e.selectedDocumentType,
+        selectedDocumentLabel: e.selectedDocumentLabel,
+        selectedDocumentId: e.selectedDocumentId,
+        selectedList: e.selectedList,
+        immigrationStatus: e.immigrationStatus,
+        documentPath: e.documentPath,
+        fileName: e.fileName,
+        s3FileKey: e.s3FileKey,
+        s3FileUrl: e.s3FileUrl,
+        userMessage: e.userMessage,
+        flags: sanitizeFlags(e.flags),
+        profile: sanitizeProfile(e.profile)
+      };
+    case "summary": {
+      const identity = (e.identity as Record<string, unknown>) || {};
+      const i9 = (e.i9 as Record<string, unknown>) || {};
+      const feedback = (e.feedback as Record<string, unknown>) || {};
+      return {
+        ...base,
+        profile: sanitizeProfile(e.profile),
+        identity: {
+          finalStatus: identity.finalStatus,
+          attemptCount: identity.attemptCount,
+          fileLinks: identity.fileLinks
+        },
+        i9: {
+          finalStatus: i9.finalStatus,
+          attemptCount: i9.attemptCount,
+          fileLinks: i9.fileLinks,
+          citizenshipStatus: i9.citizenshipStatus,
+          documentPath: i9.documentPath,
+          selectedDocuments: i9.selectedDocuments
+        },
+        feedback: { rating: feedback.rating, comments: feedback.comments }
+      };
+    }
+    case "session_start":
+      return { ...base, landingUrl: e.landingUrl };
+    case "flow_complete":
+      return { ...base, feedbackRating: e.feedbackRating, feedbackComments: e.feedbackComments };
+    case "app_redirect_click":
+      return { ...base, context: e.context, deepLink: e.deepLink };
+    default:
+      return base;
+  }
 }
 
 export function createServer() {
@@ -165,7 +287,13 @@ export function createServer() {
       return;
     }
 
-    const n8nUrl = process.env.IDENTITY_VERIFICATION_SERVICE_URL || "https://instawork.app.n8n.cloud/webhook/identity/verify-document";
+    const n8nUrl =
+      process.env.DOCUMENT_VALIDATION_SERVICE_URL ||
+      process.env.IDENTITY_VERIFICATION_SERVICE_URL ||
+      "https://instawork.app.n8n.cloud/webhook/identity/verify-document";
+    const identityVerificationSecret =
+      process.env.DOCUMENT_VALIDATION_SERVICE_SECRET ||
+      process.env.IDENTITY_VERIFICATION_SERVICE_SECRET;
     const MAX_RETRIES = 3;
     let lastError: Error | null = null;
 
@@ -176,8 +304,8 @@ export function createServer() {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            ...(process.env.IDENTITY_VERIFICATION_SERVICE_SECRET
-              ? { "x-instawork-identity-secret": process.env.IDENTITY_VERIFICATION_SERVICE_SECRET }
+            ...(identityVerificationSecret
+              ? { "x-instawork-identity-secret": identityVerificationSecret }
               : {})
           },
           body: JSON.stringify(input)
@@ -195,12 +323,14 @@ export function createServer() {
 
         console.log(`[n8n] Success on attempt ${attempt} for ${input.requestId}`);
         const normalizedAnalysis = normalizeN8nAnalysis(body.analysis as unknown as Record<string, unknown>, input);
+        const verifierBody = body as Record<string, unknown>;
+        const s3FileKey = verifierBody.s3FileKey as string | undefined;
         response.json({
           requestId: input.requestId,
           source: "n8n-gemini-vision" as const,
-          googleDriveFileId: (body as Record<string, unknown>).googleDriveFileId as string | undefined,
-          googleDriveFileUrl: googleDriveFileUrl((body as Record<string, unknown>).googleDriveFileId as string | undefined),
-          userMessage: (body as Record<string, unknown>).userMessage as string || normalizedAnalysis.reviewReason || "Document analysis completed.",
+          s3FileKey,
+          s3FileUrl: (verifierBody.s3FileUrl as string | undefined) ?? s3FileUrlFromKey(s3FileKey),
+          userMessage: (verifierBody.userMessage as string) || normalizedAnalysis.reviewReason || "Document analysis completed.",
           analysis: normalizedAnalysis
         } satisfies IdentityVerificationAnalyzeResponse);
         return;
@@ -237,8 +367,6 @@ export function createServer() {
       response.json({
         requestId: input.requestId,
         source: "python-ocr-fallback" as const,
-        googleDriveFileId: undefined,
-        googleDriveFileUrl: undefined,
         userMessage: pythonResult.userMessage as string || normalizedAnalysis.reviewReason || "Document analysis completed.",
         analysis: normalizedAnalysis
       } satisfies IdentityVerificationAnalyzeResponse);
@@ -262,6 +390,10 @@ export function createServer() {
     }
 
     const n8nUrl = process.env.I9_VERIFICATION_URL || "https://instawork.app.n8n.cloud/webhook/i9/verify-document";
+    const i9VerificationSecret =
+      process.env.I9_VERIFICATION_SECRET ||
+      process.env.DOCUMENT_VALIDATION_SERVICE_SECRET ||
+      process.env.IDENTITY_VERIFICATION_SERVICE_SECRET;
     const MAX_RETRIES = 3;
     let lastError: Error | null = null;
 
@@ -271,7 +403,12 @@ export function createServer() {
         console.log(`[i9-n8n] expectedList=${(i9Context as Record<string, unknown>)?.expectedList} expectedDoc=${(i9Context as Record<string, unknown>)?.expectedDocLabel} status=${(i9Context as Record<string, unknown>)?.citizenshipStatus}`);
         const n8nResponse = await fetch(n8nUrl, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            ...(i9VerificationSecret
+              ? { "x-instawork-identity-secret": i9VerificationSecret }
+              : {})
+          },
           body: JSON.stringify({
             requestId: body.requestId,
             imageBase64: body.imageBase64,
@@ -295,12 +432,12 @@ export function createServer() {
         console.log(`[i9-n8n] Success on attempt ${attempt} for ${body.requestId}`);
         const input = { requestId: String(body.requestId), imageBase64: "", selectedDocumentType: String(body.selectedDocumentType) as GovernmentIdType, documentSide: String(body.documentSide) as "front" | "back", profile } as IdentityVerificationAnalyzeRequest;
         const normalizedAnalysis = normalizeN8nAnalysis(result.analysis as Record<string, unknown>, input);
-
+        const i9S3FileKey = result.s3FileKey as string | undefined;
         response.json({
           requestId: body.requestId,
           source: "n8n-i9-gemini",
-          googleDriveFileId: result.googleDriveFileId,
-          googleDriveFileUrl: googleDriveFileUrl(String(result.googleDriveFileId || "")),
+          s3FileKey: i9S3FileKey,
+          s3FileUrl: (result.s3FileUrl as string | undefined) ?? s3FileUrlFromKey(i9S3FileKey),
           userMessage: result.userMessage || normalizedAnalysis.reviewReason || "Document analysis completed.",
           analysis: normalizedAnalysis
         });
@@ -320,6 +457,67 @@ export function createServer() {
     });
   });
 
+  // Look up the Intercom contact's name + email only (no phone / location / custom attributes).
+  async function lookupIntercomIdentity(event: AuditLogEvent): Promise<{ intercomName?: string; intercomEmail?: string }> {
+    const enrichableKinds: AuditLogEvent["recordKind"][] = ["app_redirect_click", "session_start", "flow_complete"];
+    if (!enrichableKinds.includes(event.recordKind)) return {};
+
+    const intercomApiKey = process.env.INTERCOM_API_KEY;
+    if (!intercomApiKey) return {};
+
+    const enrichable = event as AuditAppRedirectEvent | AuditSessionStartEvent | AuditFlowCompleteEvent;
+    const userId = enrichable.intercomUserId;
+    const email = enrichable.intercomEmail;
+    if (!userId && !email) return {};
+
+    try {
+      // Search Intercom contacts by external user_id first, then fall back to email
+      const searchUrl = userId
+        ? `https://api.intercom.io/contacts/search`
+        : `https://api.intercom.io/contacts/search`;
+
+      const searchBody = userId
+        ? { query: { operator: "AND", value: [{ field: "external_id", operator: "=", value: userId }] } }
+        : { query: { operator: "AND", value: [{ field: "email", operator: "=", value: email }] } };
+
+      const intercomResponse = await fetch(searchUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "accept": "application/json",
+          "authorization": `Bearer ${intercomApiKey}`,
+          "Intercom-Version": "2.11"
+        },
+        body: JSON.stringify(searchBody),
+        signal: AbortSignal.timeout(8000)
+      });
+
+      if (!intercomResponse.ok) {
+        console.log(`[intercom] Lookup failed: ${intercomResponse.status}`);
+        return {};
+      }
+
+      const intercomData = await intercomResponse.json() as Record<string, unknown>;
+      const contacts = (intercomData.data as unknown[]) ?? [];
+      const contact = contacts[0] as Record<string, unknown> | undefined;
+
+      if (!contact) {
+        console.log(`[intercom] No contact found for userId=${userId} email=${email}`);
+        return {};
+      }
+
+      console.log(`[intercom] Resolved contact id=${contact.id} for ${event.recordKind}`);
+
+      return {
+        intercomName: typeof contact.name === "string" ? contact.name : undefined,
+        intercomEmail: (typeof contact.email === "string" ? contact.email : undefined) || email || undefined
+      };
+    } catch (err) {
+      console.log(`[intercom] Enrichment error: ${err instanceof Error ? err.message : String(err)}`);
+      return {};
+    }
+  }
+
   app.post("/api/audit-log", async (request, response) => {
     const event = request.body as unknown;
     if (!isAuditLogEvent(event)) {
@@ -333,6 +531,11 @@ export function createServer() {
       return;
     }
 
+    // Strip everything except the whitelisted audit fields, then attach Intercom name/email.
+    const cleanEvent = sanitizeAuditEvent(event);
+    const intercomIdentity = await lookupIntercomIdentity(event);
+    const payload = { ...cleanEvent, ...intercomIdentity };
+
     try {
       const auditResponse = await fetch(auditWebhookUrl, {
         method: "POST",
@@ -342,7 +545,8 @@ export function createServer() {
             ? { "x-instawork-audit-secret": process.env.AUDIT_LOG_WEBHOOK_SECRET }
             : {})
         },
-        body: JSON.stringify(event)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(8000)
       });
 
       if (!auditResponse.ok) {
@@ -351,10 +555,9 @@ export function createServer() {
 
       response.json({ logged: true });
     } catch (error) {
-      response.status(502).json({
-        logged: false,
-        error: error instanceof Error ? error.message : "Audit log forwarding failed."
-      });
+      const message = error instanceof Error ? error.message : "Audit log forwarding failed.";
+      console.error(`[audit] Failed to forward ${event.recordKind} for session ${event.sessionId}: ${message}`);
+      response.status(502).json({ logged: false, error: message });
     }
   });
 
@@ -363,7 +566,7 @@ export function createServer() {
   });
 
   // Serve the built Vite frontend in production
-  const clientDistPath = join(new URL(".", import.meta.url).pathname, "../dist/client");
+  const clientDistPath = join(dirname(fileURLToPath(import.meta.url)), "../dist/client");
   if (existsSync(clientDistPath)) {
     app.use(express.static(clientDistPath));
     // SPA fallback — serve index.html for any non-API route

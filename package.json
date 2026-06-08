@@ -12,7 +12,8 @@
     "start": "tsx server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "figma:board": "npx tsx scripts/figma-board-automation.ts"
   },
   "keywords": [],
   "author": "",

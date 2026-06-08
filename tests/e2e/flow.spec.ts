@@ -26,6 +26,11 @@ test("completes the W-2 and WorkBright happy path", async ({ page }) => {
   await page.getByRole("button", { name: "Start Form I-9" }).click();
   await expect(page.getByText("Lakshya Bhambhani")).toBeVisible();
   await page.getByRole("button", { name: "Continue to citizenship" }).click();
+  await expect(page.getByText("Born in the U.S., naturalized, or acquired citizenship through a parent.")).toBeVisible();
+  await expect(page.getByText(/Born in American Samoa or Swains Island/)).toBeVisible();
+  await expect(page.getByText(/You have a Green Card/)).toBeVisible();
+  await expect(page.getByText(/You have temporary work authorization/)).toBeVisible();
+  await expect(page.getByText("Scroll down to see all 4 options")).toBeVisible();
   await page.getByRole("button", { name: "Select documents" }).click();
   await page.getByRole("button", { name: "Upload passport fixture" }).click();
   await page.getByRole("button", { name: "Review OCR" }).click();

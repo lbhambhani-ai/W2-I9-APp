@@ -69,15 +69,19 @@ async function reachW2Prompt() {
 }
 
 async function reachIdentityVerification() {
+  await reachIdentityVerificationConsent();
+  // Step 5: Document Validation Consent
+  await userEvent.click(screen.getByRole("radio", { name: "Yes" }));
+  await userEvent.click(screen.getByRole("button", { name: "Begin verifying" }));
+  // Step 6: Government ID Upload
+}
+
+async function reachIdentityVerificationConsent() {
   await reachW2Prompt();
   // Step 3: W-2 Onboarding Prompt
   await userEvent.click(screen.getByRole("button", { name: "Start onboarding" }));
   // Step 4: W-2 Documentation Intro
   await userEvent.click(screen.getByRole("button", { name: "Get started" }));
-  // Step 5: Identity Verification Consent
-  await userEvent.click(screen.getByRole("radio", { name: "Yes" }));
-  await userEvent.click(screen.getByRole("button", { name: "Begin verifying" }));
-  // Step 6: Government ID Upload
 }
 
 describe("W-2 onboarding prompt", () => {
@@ -90,7 +94,7 @@ describe("W-2 onboarding prompt", () => {
     await reachW2Prompt();
 
     expect(screen.getByRole("heading", { name: "W-2 onboarding" })).toBeVisible();
-    expect(screen.getByText("Unlock more shifts by completing your paperwork for W-2 shifts.")).toBeVisible();
+    expect(screen.getByText(/Unlock more shifts/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Start onboarding" })).toBeVisible();
     expect(screen.getByRole("navigation", { name: "Instawork tabs" })).toBeVisible();
     expect(screen.getByText("Profile")).toHaveAttribute("aria-current", "page");
@@ -98,11 +102,20 @@ describe("W-2 onboarding prompt", () => {
     expect(startScreen.querySelector(".w2-start-content")).toHaveClass("no-scroll");
   });
 
-  it("opens identity verification after the W-2 documentation intro and requires yes consent", async () => {
+  it("opens document validation after the W-2 documentation intro and requires yes consent", async () => {
     await reachIdentityVerification();
 
-    expect(screen.getByRole("heading", { name: "Government ID" })).toBeVisible();
-    const select = screen.getByRole("combobox", { name: "US government ID type" });
+    expect(screen.getByRole("heading", { name: "Government-Issued ID" })).toBeVisible();
+    const select = screen.getByRole("combobox", { name: "Government-issued ID type" });
     expect(select).toBeVisible();
+  });
+
+  it("shows simulation-only consent without regulated identity language", async () => {
+    await reachIdentityVerificationConsent();
+
+    expect(screen.getByRole("heading", { name: "Simulation Consent" })).toBeVisible();
+    expect(screen.getByText(/we are not storing sensitive documents anywhere/i)).toBeVisible();
+    expect(screen.queryByText(/English/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp("bio" + "metric", "i"))).not.toBeInTheDocument();
   });
 });

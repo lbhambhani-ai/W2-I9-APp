@@ -1,0 +1,462 @@
+{
+  "name": "Identity Verification - Native AWS S3 Dev",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "identity/verify-document",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b3011e73-dbc7-481b-88bc-8cff3c4c2707",
+      "name": "Identity Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        19840,
+        13232
+      ],
+      "webhookId": "identity-verify-document"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nconst expectedSecret = ($vars && ($vars.IDENTITY_VERIFICATION_WEBHOOK_TOKEN || $vars.DOCUMENT_VALIDATION_SERVICE_SECRET)) || '';\nif (expectedSecret) {\n  const headers = $json.headers || {};\n  const providedSecret = headers['x-instawork-identity-secret'] || headers['X-Instawork-Identity-Secret'] || headers['authorization']?.replace(/^Bearer\\s+/i, '') || '';\n  if (providedSecret !== expectedSecret) {\n    console.log('[AUTH] REJECTED: missing or invalid webhook secret');\n    return [{ json: { valid: false, responseCode: 401, response: { success: false, requestId: body.requestId || null, error: { code: 'UNAUTHORIZED', message: 'Unauthorized request.' }, analysis: null } } }];\n  }\n}\nconst allowedTypes = ['drivers-license','state-id','passport','passport-card','permanent-resident-card','employment-authorization-card','military-id','unknown'];\nconst allowedSides = ['front','back'];\nconst p = body.profile || {};\nconst imgLen = (body.imageBase64 || '').length;\n\nconsole.log('[INTAKE] requestId=' + (body.requestId || 'MISSING'));\nconsole.log('[INTAKE] documentType=' + (body.selectedDocumentType || 'MISSING') + ' side=' + (body.documentSide || 'MISSING'));\nconsole.log('[INTAKE] profile: firstName=' + (p.legalFirstName || 'MISSING') + ' lastName=' + (p.legalLastName || 'MISSING') + ' DOB=' + (p.dateOfBirth || 'MISSING'));\nconsole.log('[INTAKE] imageBase64 length=' + imgLen + ' chars (~' + Math.round(imgLen * 0.75 / 1024) + ' KB)');\n\nconst missing = [];\nfor (const path of ['requestId','selectedDocumentType','documentSide','imageBase64','profile.legalFirstName','profile.legalLastName','profile.dateOfBirth']) {\n  const value = path.split('.').reduce((acc, key) => acc && acc[key], body);\n  if (value === undefined || value === null || value === '') missing.push(path);\n}\nconst invalid = [];\nif (body.selectedDocumentType && !allowedTypes.includes(body.selectedDocumentType)) invalid.push('selectedDocumentType');\nif (body.documentSide && !allowedSides.includes(body.documentSide)) invalid.push('documentSide');\n\nif (missing.length || invalid.length) {\n  console.log('[INTAKE] REJECTED: missing=' + JSON.stringify(missing) + ' invalid=' + JSON.stringify(invalid));\n  return [{ json: { valid: false, response: { success: false, requestId: body.requestId || null, error: { code: 'INVALID_REQUEST', message: 'Missing or invalid fields.', missing, invalid }, analysis: null } } }];\n}\nconsole.log('[INTAKE] VALID - proceeding to image conversion');\nreturn [{ json: { ...body, valid: true } }];"
+      },
+      "id": "056aa012-7352-4958-986d-9d2a232860d4",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20064,
+        13232
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-cond",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "25467a49-e696-4589-b119-c724f2a991ff",
+      "name": "Is Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        20288,
+        13232
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": "={{ $json.responseCode || 400 }}"
+        }
+      },
+      "id": "8d49d6c2-452b-4247-98e7-46ab8cf362f0",
+      "name": "Respond Invalid Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        20512,
+        13328
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let original = {};\ntry { original = ($('Convert Base64 To Binary')?.item?.json) || {}; } catch (e) { console.log('[S3-FAIL] could not read original: ' + e.message); }\nconst error = $json || {};\nconst message = error.message || error.error?.message || error.error || 'S3 upload failed';\nconsole.log('[S3-UPLOAD-FAIL] Native AWS S3 node failed: ' + JSON.stringify(error).slice(0, 1000));\nreturn [{\n  json: {\n    success: false,\n    requestId: original.requestId || null,\n    source: 'n8n-native-s3-upload',\n    s3FileKey: original.s3Key || null,\n    s3FileUrl: original.s3FileUrl || null,\n    error: {\n      code: error.code || 'S3_UPLOAD_FAILED',\n      message,\n      rawResponse: JSON.stringify(error).slice(0, 2000)\n    },\n    analysis: null\n  }\n}];"
+      },
+      "id": "f5a1c3d8-6e2b-4f9a-9d4c-7e1b2a3c4d5e",
+      "name": "Build S3 Upload Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20960,
+        13328
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "a9b8c7d6-e5f4-43a2-b1c0-9d8e7f6a5b4c",
+      "name": "Respond S3 Upload Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        21184,
+        13328
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Decode the base64 image and compute SigV4 headers locally.\n// This avoids n8n's AWS credential helper, which calls s3:GetBucketLocation.\nconst crypto = require('crypto');\n\nconst accessKey = ($vars && $vars.IV_AWS_ACCESS_KEY_ID) || '';\nconst secretKey = ($vars && $vars.IV_AWS_SECRET_ACCESS_KEY) || '';\nconst region = ($vars && $vars.IV_AWS_REGION) || 'us-west-2';\nconst bucket = ($vars && $vars.IV_AWS_BUCKET) || 'instawork-prod-ops-w2-i9-docs-dev';\nconst service = 's3';\n\nif (!accessKey || !secretKey) {\n  throw new Error('Missing n8n Variables IV_AWS_ACCESS_KEY_ID and/or IV_AWS_SECRET_ACCESS_KEY.');\n}\n\nconst input = $json;\nconst raw = String(input.imageBase64 || '');\nconst match = raw.match(/^data:(.*?);base64,(.*)$/);\nconst mimeType = match ? (match[1] || 'image/png') : 'image/png';\nconst base64 = match ? match[2] : raw;\nconst extByMime = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };\nconst extension = extByMime[mimeType] || 'png';\n\nconst safePart = (value) => String(value || 'unknown').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';\nconst safeRequestId = safePart(input.requestId);\nconst safeDocType = safePart(input.selectedDocumentType);\nconst safeSide = safePart(input.documentSide);\nconst fileName = `${safeRequestId}-${safeDocType}-${safeSide}.${extension}`;\n\nconst p = input.profile || {};\nconst safeUserId = safePart(\n  input.userId || input.workerId || input.accountId ||\n  p.userId || p.workerId || p.accountId || safeRequestId\n);\nconst flowHint = String(input.flow || input.documentFlow || input.documentCategory || '').toLowerCase();\nconst s3Prefix = flowHint.includes('i9') ? 'i9' : 'w2';\nconst s3Key = `${s3Prefix}/${safeUserId}/${fileName}`;\n\nconst buffer = Buffer.from(base64, 'base64');\nif (!buffer.length) throw new Error('imageBase64 decoded to an empty file');\n\nconst host = `${bucket}.s3.${region}.amazonaws.com`;\nconst method = 'PUT';\nconst now = new Date();\nconst amzDate = now.toISOString().replace(/[:-]|\\.\\d{3}/g, '');\nconst dateStamp = amzDate.substring(0, 8);\nconst payloadHash = crypto.createHash('sha256').update(buffer).digest('hex');\nconst canonicalUri = '/' + s3Key.split('/').map((segment) => encodeURIComponent(segment)).join('/');\nconst sse = 'AES256';\nconst canonicalHeaders =\n  `content-type:${mimeType}\\n` +\n  `host:${host}\\n` +\n  `x-amz-content-sha256:${payloadHash}\\n` +\n  `x-amz-date:${amzDate}\\n` +\n  `x-amz-server-side-encryption:${sse}\\n`;\nconst signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date;x-amz-server-side-encryption';\nconst canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\\n');\nconst credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;\nconst stringToSign = [\n  'AWS4-HMAC-SHA256',\n  amzDate,\n  credentialScope,\n  crypto.createHash('sha256').update(canonicalRequest).digest('hex')\n].join('\\n');\n\nconst hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();\nconst kDate = hmac('AWS4' + secretKey, dateStamp);\nconst kRegion = hmac(kDate, region);\nconst kService = hmac(kRegion, service);\nconst kSigning = hmac(kService, 'aws4_request');\nconst signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');\nconst authorization = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;\nconst s3Url = `https://${host}${canonicalUri}`;\nconst binary = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\n\nconsole.log('[S3-SIGN] requestId=' + safeRequestId + ' key=' + s3Key + ' bytes=' + buffer.length);\n\nreturn [{\n  json: {\n    ...input,\n    requestId: safeRequestId,\n    userId: typeof safeUserId === 'undefined' ? undefined : safeUserId,\n    mimeType,\n    fileName,\n    s3Bucket: bucket,\n    s3Region: region,\n    s3Key,\n    s3FileKey: s3Key,\n    s3FileUrl: s3Url,\n    s3Url,\n    awsAuthorization: authorization,\n    awsXAmzDate: amzDate,\n    awsXAmzContentSha256: payloadHash,\n    awsXAmzServerSideEncryption: sse\n  },\n  binary: { data: binary }\n}];"
+      },
+      "id": "627402ac-ba05-4db3-9fc5-dcefecb30ba9",
+      "name": "Convert + Sign for S3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20512,
+        13136
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.s3Url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.awsAuthorization }}"
+            },
+            {
+              "name": "x-amz-date",
+              "value": "={{ $json.awsXAmzDate }}"
+            },
+            {
+              "name": "x-amz-content-sha256",
+              "value": "={{ $json.awsXAmzContentSha256 }}"
+            },
+            {
+              "name": "x-amz-server-side-encryption",
+              "value": "={{ $json.awsXAmzServerSideEncryption }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.mimeType }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "bd4a6f58-f2fa-4629-ba59-b723c6e63eb5",
+      "name": "Upload ID Image To S3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        20736,
+        13136
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "b0cf0999-d45d-4443-8c20-2ccfbad3d5a7",
+      "name": "Respond Verification Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        21632,
+        13136
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "=You are an identity-document verification system for real users. Analyze the uploaded image and return ONLY valid JSON (no markdown, no code fences, no prose).\n\nUser profile to compare against:\n- firstName: {{ $json.profile.legalFirstName }}\n- lastName: {{ $json.profile.legalLastName }}\n- dateOfBirth: {{ $json.profile.dateOfBirth }}\n- selectedDocumentType: {{ $json.selectedDocumentType }}\n- documentSide: {{ $json.documentSide }}\n\nTASKS:\n1. Detect if a supported US government document is visible.\n2. Identify the actual document type and side shown.\n3. Extract all readable text fields.\n4. Compare FIRST NAME and LAST NAME (ignore middle name) to profile. Case-insensitive: SMITH=Smith=smith. Only flag MISMATCH if actual spelling differs.\n\nSUFFIX RULES (Jr, Sr, II, III, IV, etc.):\n- Treat suffix as part of the legal name. Determine the profile suffix from the profile lastName/profile name if it ends with JR, SR, II, III, IV, etc.\n- Always extract any suffix visible on the document into extractedFields.suffix (e.g. JR, SR, II, III). Set null if absent.\n- Suffix must match EXACTLY between profile and document (case-insensitive: JR=Jr=jr):\n  * Profile has NO suffix AND document shows a suffix (e.g. JR, SR) -> flag NAME_MISMATCH. The user's legal profile does not include this suffix.\n  * Profile HAS a suffix AND document shows the same suffix -> MATCH.\n  * Profile HAS a suffix AND document shows NO suffix -> flag NAME_MISMATCH. The suffix on the profile is missing from the document.\n  * Profile and document show different suffixes -> flag NAME_MISMATCH.\n  * Neither profile nor document has a suffix -> MATCH for suffix.\n- Never silently ignore a suffix difference. Any suffix discrepancy is a NAME_MISMATCH with severity CRITICAL.\n\n5. Compare DOB to profile (must match YYYY-MM-DD exactly).\n6. Check if document is expired as of today.\n\nDATE RULES: Normalize to YYYY-MM-DD. Two-digit years: DOB=past century, expiry=future. Fields labelled EXP/EXPIRES/4b=expiration. ISS/ISSUED/4a=issue date (NOT expiration).\n\nISSUE DATE RULE: issue_date/ISS/ISSUED/4a is informational only. Do NOT compare issue_date to today's date. Do NOT reject, flag, or mention a document because the issue date appears to be in the future or not yet valid. Only expiration_date/EXP/EXPIRES/4b may be used for date validity.\n\nSIDE RULES: If back uploaded as front or vice versa, set sideMatchesSelected=false.\n\nTAMPERING RULES: If the image contains watermarks, sample overlays, blankpsd.com, blankpsd, template text, repeated email/domain text across the image, or ANY sign it is a fake, edited, or digital template document \u2014 set flags with IMAGE_TAMPERING (severity CRITICAL), set complianceEligibility=false, nextAction=HALT_VERIFICATION, humanReviewRequired=true, and write a clear userMessage explaining the document appears to be a sample or digitally altered and cannot be accepted.\n\nDOCUMENT COPY / SCREENSHOT RULES:\n- Reject screenshots, screen captures, photos of a phone/computer screen, scans, photocopies, xerox copies, printed copies, black-and-white copies, or any image that appears to show a copy/reproduction instead of the original physical document.\n- If this is detected, set flags with DOCUMENT_COPY_OR_SCREENSHOT (severity CRITICAL), set complianceEligibility=false, nextAction=RETAKE_PHOTO, humanReviewRequired=true, and write a clear userMessage asking the user to upload a clear photo of the original physical document, not a screenshot, scan, photocopy, or xerox copy.\n- This rule applies to both front and back side uploads.\n\nPASSPORT BOOK vs PASSPORT CARD CLASSIFICATION (CRITICAL):\n- A US Passport BOOK is a multi-page booklet (typically 3.5 x 5 inches closed). It has a dark blue cover, a full biographical data page inside with a large photo, printed personal details, and a Machine Readable Zone (MRZ) that starts with P<USA. If you see a booklet, multiple pages, or MRZ starting with P<USA, classify as \"passport\" \u2014 NEVER as \"passport-card\".\n- A US Passport CARD is a single wallet-sized plastic card (about the size of a credit card / driver's license). It says \"PASSPORT CARD\" or \"UNITED STATES PASSPORT CARD\" on the front. It has no booklet pages. If the document is wallet-sized, single-card, and says PASSPORT CARD, classify as \"passport-card\".\n- When in doubt, if the document looks like a booklet or has an MRZ starting with P<USA, it is a passport BOOK (\"passport\"), not a passport card.\n- Getting this classification wrong is a CRITICAL error. Double-check before returning detectedDocumentType.\n\nnextAction values: CONTINUE (all checks pass), RETAKE_PHOTO (blurry/no doc), REQUEST_FRONT_IMAGE (back in front slot), REQUEST_BACK_IMAGE (front in back slot), HALT_VERIFICATION (name/DOB mismatch, expired, tampering).\n\nMANDATORY FLAG SEVERITY RULES: NAME_MISMATCH, DOB_MISMATCH, IMAGE_TAMPERING, DOCUMENT_EXPIRED must ALWAYS have severity=CRITICAL. NEVER use WARNING or INFO for these.\n\nFRONT SIDE: nameMatch and dobMatch MUST be checked \u2014 status MUST be MATCH or MISMATCH (never NOT_CHECKED on front side). If name does not match profile, set nameMatch.status=MISMATCH AND add NAME_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false. If DOB does not match, set dobMatch.status=MISMATCH AND add DOB_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false.\nBACK SIDE: nameMatch and dobMatch can be NOT_CHECKED.\n\ncomplianceEligibility=true ONLY when: documentDetected=true AND documentTypeMatch=true AND sideMatchesSelected=true AND nameMatch.status=MATCH (front) or NOT_CHECKED (back only) AND dobMatch.status=MATCH (front) or NOT_CHECKED (back only) AND document is not expired AND no CRITICAL flags AND no IMAGE_TAMPERING.\n\nVENEZUELAN PASSPORT EXPIRY EXEMPTION:\\n- If the document is a Venezuelan passport (nationality or country of issuance is Venezuela / VEN), do NOT check or enforce the expiration date.\\n- Set expirationStatus=NOT_APPLICABLE. Do NOT flag DOCUMENT_EXPIRED even if the printed expiration date is in the past.\\n- Add a flag with severity INFO, code VENEZUELAN_PASSPORT_EXPIRY_BYPASS, message: \\\"Since this is a Venezuelan passport, the expiry date will not be checked. Make sure your name and date of birth match those on your identity document to proceed.\\\"\\n- Still check name, DOB, document type, and all other validations normally.\\n- Extract nationality/country_code into extractedFields when detected.\\n\\nSupported types: drivers-license, state-id, passport, passport-card, permanent-resident-card, employment-authorization-card, military-id, unknown.\n\nReturn this EXACT JSON structure:\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"drivers-license\",\n  \"detectedDocumentTypeLabel\": \"US Driver's License\",\n  \"documentTypeMatch\": true,\n  \"detectedSide\": \"front\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null,\n    \"middle_name\": null,\n    \"last_name\": null,\n    \"suffix\": null,\n    \"date_of_birth\": null,\n    \"expiration_date\": null,\n    \"issue_date\": null,\n    \"document_number\": null,\n    \"address_line1\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null,\n    \"sex\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"John Smith\", \"documentExtracted\": \"JOHN SMITH\" },\n    \"dobMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"1990-01-15\", \"documentExtracted\": \"1990-01-15\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"NOT_EXPIRED\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"Your document has been verified successfully.\"\n}\n\nIMPORTANT:\n- validationResults.nameMatch and dobMatch MUST be objects with status field (MATCH, MISMATCH, NOT_CHECKED, PARTIAL_MATCH, or AMBIGUOUS).\n- complianceEligibility MUST be a boolean (true/false), never an object.\n- flags MUST be an array of objects: {\"severity\":\"CRITICAL\",\"code\":\"NAME_MISMATCH\",\"message\":\"human readable message\"}.\n- userMessage MUST be a friendly sentence for the end user explaining the result.\n- Use null for fields you cannot read. Never invent data.\n- If the image is too blurry to read, set documentDetected=true but fields to null and nextAction=RETAKE_PHOTO.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "873296ae-d15e-4fc4-bef8-5c91815ad3dd",
+      "name": "Analyze ID Document",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        21184,
+        13136
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "m4VCWj43BbfwQLJf",
+          "name": "Prod Ops Gemini Key"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\nconsole.log('[FALLBACK] Primary Gemini 2.5 Flash failed: ' + JSON.stringify(error?.message || error?.error || 'unknown error'));\nconsole.log('[FALLBACK] Routing to fallback model gemini-2.0-flash...');\n\nconst contextItem = $('Prepare Context Data').item;\nconst binaryData = contextItem.binary?.data || null;\n\nreturn [{\n  json: {\n    ...contextItem.json,\n    _fallbackReason: String(error?.message || error?.error || 'Primary model unavailable')\n  },\n  binary: binaryData ? { data: binaryData } : undefined\n}];"
+      },
+      "id": "145e8af7-2711-4466-a045-3cb65e6ea15f",
+      "name": "Prepare Fallback Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        21184,
+        13376
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.0-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.0-flash"
+        },
+        "text": "=You are an identity-document verification system for real users. Analyze the uploaded image and return ONLY valid JSON (no markdown, no code fences, no prose).\n\nUser profile to compare against:\n- firstName: {{ $json.profile.legalFirstName }}\n- lastName: {{ $json.profile.legalLastName }}\n- dateOfBirth: {{ $json.profile.dateOfBirth }}\n- selectedDocumentType: {{ $json.selectedDocumentType }}\n- documentSide: {{ $json.documentSide }}\n\nTASKS:\n1. Detect if a supported US government document is visible.\n2. Identify the actual document type and side shown.\n3. Extract all readable text fields.\n4. Compare FIRST NAME and LAST NAME (ignore middle name) to profile. Case-insensitive: SMITH=Smith=smith. Only flag MISMATCH if actual spelling differs.\n\nSUFFIX RULES (Jr, Sr, II, III, IV, etc.):\n- Treat suffix as part of the legal name. Determine the profile suffix from the profile lastName/profile name if it ends with JR, SR, II, III, IV, etc.\n- Always extract any suffix visible on the document into extractedFields.suffix (e.g. JR, SR, II, III). Set null if absent.\n- Suffix must match EXACTLY between profile and document (case-insensitive: JR=Jr=jr):\n  * Profile has NO suffix AND document shows a suffix (e.g. JR, SR) -> flag NAME_MISMATCH. The user's legal profile does not include this suffix.\n  * Profile HAS a suffix AND document shows the same suffix -> MATCH.\n  * Profile HAS a suffix AND document shows NO suffix -> flag NAME_MISMATCH. The suffix on the profile is missing from the document.\n  * Profile and document show different suffixes -> flag NAME_MISMATCH.\n  * Neither profile nor document has a suffix -> MATCH for suffix.\n- Never silently ignore a suffix difference. Any suffix discrepancy is a NAME_MISMATCH with severity CRITICAL.\n\n5. Compare DOB to profile (must match YYYY-MM-DD exactly).\n6. Check if document is expired as of today.\n\nDATE RULES: Normalize to YYYY-MM-DD. Two-digit years: DOB=past century, expiry=future. Fields labelled EXP/EXPIRES/4b=expiration. ISS/ISSUED/4a=issue date (NOT expiration).\n\nISSUE DATE RULE: issue_date/ISS/ISSUED/4a is informational only. Do NOT compare issue_date to today's date. Do NOT reject, flag, or mention a document because the issue date appears to be in the future or not yet valid. Only expiration_date/EXP/EXPIRES/4b may be used for date validity.\n\nSIDE RULES: If back uploaded as front or vice versa, set sideMatchesSelected=false.\n\nTAMPERING RULES: If the image contains watermarks, sample overlays, blankpsd.com, blankpsd, template text, repeated email/domain text across the image, or ANY sign it is a fake, edited, or digital template document \u2014 set flags with IMAGE_TAMPERING (severity CRITICAL), set complianceEligibility=false, nextAction=HALT_VERIFICATION, humanReviewRequired=true, and write a clear userMessage explaining the document appears to be a sample or digitally altered and cannot be accepted.\n\nDOCUMENT COPY / SCREENSHOT RULES:\n- Reject screenshots, screen captures, photos of a phone/computer screen, scans, photocopies, xerox copies, printed copies, black-and-white copies, or any image that appears to show a copy/reproduction instead of the original physical document.\n- If this is detected, set flags with DOCUMENT_COPY_OR_SCREENSHOT (severity CRITICAL), set complianceEligibility=false, nextAction=RETAKE_PHOTO, humanReviewRequired=true, and write a clear userMessage asking the user to upload a clear photo of the original physical document, not a screenshot, scan, photocopy, or xerox copy.\n- This rule applies to both front and back side uploads.\n\nPASSPORT BOOK vs PASSPORT CARD CLASSIFICATION (CRITICAL):\n- A US Passport BOOK is a multi-page booklet (typically 3.5 x 5 inches closed). It has a dark blue cover, a full biographical data page inside with a large photo, printed personal details, and a Machine Readable Zone (MRZ) that starts with P<USA. If you see a booklet, multiple pages, or MRZ starting with P<USA, classify as \"passport\" \u2014 NEVER as \"passport-card\".\n- A US Passport CARD is a single wallet-sized plastic card (about the size of a credit card / driver's license). It says \"PASSPORT CARD\" or \"UNITED STATES PASSPORT CARD\" on the front. It has no booklet pages. If the document is wallet-sized, single-card, and says PASSPORT CARD, classify as \"passport-card\".\n- When in doubt, if the document looks like a booklet or has an MRZ starting with P<USA, it is a passport BOOK (\"passport\"), not a passport card.\n- Getting this classification wrong is a CRITICAL error. Double-check before returning detectedDocumentType.\n\nnextAction values: CONTINUE (all checks pass), RETAKE_PHOTO (blurry/no doc), REQUEST_FRONT_IMAGE (back in front slot), REQUEST_BACK_IMAGE (front in back slot), HALT_VERIFICATION (name/DOB mismatch, expired, tampering).\n\nMANDATORY FLAG SEVERITY RULES: NAME_MISMATCH, DOB_MISMATCH, IMAGE_TAMPERING, DOCUMENT_EXPIRED must ALWAYS have severity=CRITICAL. NEVER use WARNING or INFO for these.\n\nFRONT SIDE: nameMatch and dobMatch MUST be checked \u2014 status MUST be MATCH or MISMATCH (never NOT_CHECKED on front side). If name does not match profile, set nameMatch.status=MISMATCH AND add NAME_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false. If DOB does not match, set dobMatch.status=MISMATCH AND add DOB_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false.\nBACK SIDE: nameMatch and dobMatch can be NOT_CHECKED.\n\ncomplianceEligibility=true ONLY when: documentDetected=true AND documentTypeMatch=true AND sideMatchesSelected=true AND nameMatch.status=MATCH (front) or NOT_CHECKED (back only) AND dobMatch.status=MATCH (front) or NOT_CHECKED (back only) AND document is not expired AND no CRITICAL flags AND no IMAGE_TAMPERING.\n\nVENEZUELAN PASSPORT EXPIRY EXEMPTION:\\n- If the document is a Venezuelan passport (nationality or country of issuance is Venezuela / VEN), do NOT check or enforce the expiration date.\\n- Set expirationStatus=NOT_APPLICABLE. Do NOT flag DOCUMENT_EXPIRED even if the printed expiration date is in the past.\\n- Add a flag with severity INFO, code VENEZUELAN_PASSPORT_EXPIRY_BYPASS, message: \\\"Since this is a Venezuelan passport, the expiry date will not be checked. Make sure your name and date of birth match those on your identity document to proceed.\\\"\\n- Still check name, DOB, document type, and all other validations normally.\\n- Extract nationality/country_code into extractedFields when detected.\\n\\nSupported types: drivers-license, state-id, passport, passport-card, permanent-resident-card, employment-authorization-card, military-id, unknown.\n\nReturn this EXACT JSON structure:\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"drivers-license\",\n  \"detectedDocumentTypeLabel\": \"US Driver's License\",\n  \"documentTypeMatch\": true,\n  \"detectedSide\": \"front\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null,\n    \"middle_name\": null,\n    \"last_name\": null,\n    \"suffix\": null,\n    \"date_of_birth\": null,\n    \"expiration_date\": null,\n    \"issue_date\": null,\n    \"document_number\": null,\n    \"address_line1\": null,\n    \"city\": null,\n    \"state\": null,\n    \"zip\": null,\n    \"sex\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"John Smith\", \"documentExtracted\": \"JOHN SMITH\" },\n    \"dobMatch\": { \"status\": \"MATCH\", \"details\": null, \"userProvided\": \"1990-01-15\", \"documentExtracted\": \"1990-01-15\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"NOT_EXPIRED\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"Your document has been verified successfully.\"\n}\n\nIMPORTANT:\n- validationResults.nameMatch and dobMatch MUST be objects with status field (MATCH, MISMATCH, NOT_CHECKED, PARTIAL_MATCH, or AMBIGUOUS).\n- complianceEligibility MUST be a boolean (true/false), never an object.\n- flags MUST be an array of objects: {\"severity\":\"CRITICAL\",\"code\":\"NAME_MISMATCH\",\"message\":\"human readable message\"}.\n- userMessage MUST be a friendly sentence for the end user explaining the result.\n- Use null for fields you cannot read. Never invent data.\n- If the image is too blurry to read, set documentDetected=true but fields to null and nextAction=RETAKE_PHOTO.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "645387f9-bd1b-491b-a114-dcaf2ddbe63d",
+      "name": "Analyze ID Document (Fallback)",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        21408,
+        13376
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "m4VCWj43BbfwQLJf",
+          "name": "Prod Ops Gemini Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const convertItem = $('Convert + Sign for S3').item;\nconst originalJson = convertItem.json;\nconst uploadJson = $('Upload ID Image To S3').item?.json || {};\n\nconst uploadStatus = uploadJson.statusCode || uploadJson.status || null;\nconst uploadEtag = (uploadJson.headers && (uploadJson.headers.etag || uploadJson.headers.ETag)) || null;\nconst s3UploadSucceeded = uploadStatus ? (uploadStatus >= 200 && uploadStatus < 300) : true;\n\nif (!s3UploadSucceeded) {\n  const bodyPreview = typeof uploadJson.body === 'string' ? uploadJson.body.slice(0, 1500) : JSON.stringify(uploadJson.body || uploadJson).slice(0, 1500);\n  console.log('[S3-UPLOAD] FAILED status=' + uploadStatus + ' body=' + bodyPreview);\n  throw new Error('S3 upload failed (HTTP ' + uploadStatus + '): ' + bodyPreview);\n}\n\nconst profile = {\n  legalFirstName: originalJson.profile?.legalFirstName || '',\n  legalMiddleName: originalJson.profile?.legalMiddleName || '',\n  legalLastName: originalJson.profile?.legalLastName || '',\n  dateOfBirth: originalJson.profile?.dateOfBirth || ''\n};\n\nconst requestId = originalJson.requestId || '';\nconst selectedDocumentType = originalJson.selectedDocumentType || '';\nconst documentSide = originalJson.documentSide || '';\nconst s3Key = originalJson.s3Key || '';\nconst s3FileUrl = originalJson.s3FileUrl || originalJson.s3Url || '';\nconst binaryData = convertItem.binary?.data || null;\n\nconsole.log('[S3-UPLOAD] OK status=' + uploadStatus + ' etag=' + uploadEtag + ' key=' + s3Key);\nconsole.log('[PREPARE] requestId=' + requestId);\nconsole.log('[PREPARE] s3Key=' + s3Key);\nconsole.log('[PREPARE] profile sent to Gemini: ' + JSON.stringify(profile));\nconsole.log('[PREPARE] docType=' + selectedDocumentType + ' side=' + documentSide);\nconsole.log('[PREPARE] hasBinary=' + (binaryData ? 'YES (' + (binaryData.fileSize || 'unknown size') + ')' : 'NO'));\n\nreturn [{\n  json: {\n    requestId,\n    selectedDocumentType,\n    documentSide,\n    profile,\n    s3FileKey: s3Key,\n    s3FileUrl,\n    s3UploadStatus: uploadStatus,\n    s3UploadEtag: uploadEtag,\n    fileName: originalJson.fileName || '',\n    mimeType: originalJson.mimeType || ''\n  },\n  binary: binaryData ? { data: binaryData } : undefined\n}];"
+      },
+      "id": "189fc5e1-9476-45c3-a69f-29386857b963",
+      "name": "Prepare Context Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20960,
+        13136
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysisNode = $('Analyze ID Document');\nconst contextNode = $('Prepare Context Data');\nconst rawAnalysis = analysisNode?.item?.json || {};\nconst context = contextNode?.item?.json || {};\n\nconsole.log('[GEMINI] Raw keys: ' + Object.keys(rawAnalysis).join(','));\n\nfunction extractJSON(raw) {\n  if (raw.documentDetected !== undefined) return raw;\n  if (raw.content && raw.content.parts && raw.content.parts[0] && raw.content.parts[0].text) {\n    let t = raw.content.parts[0].text.replace(/^```json\\s*/, '').replace(/```\\s*$/, '').trim();\n    try { return JSON.parse(t); } catch(e) { console.log('[PARSE] content.parts failed: ' + e.message); }\n  }\n  if (raw.text) {\n    let t = raw.text.replace(/^```json\\s*/, '').replace(/```\\s*$/, '').trim();\n    try { return JSON.parse(t); } catch(e) { console.log('[PARSE] text failed: ' + e.message); }\n  }\n  return null;\n}\n\nfunction toFieldMatch(val) {\n  if (!val) return { status: 'NOT_CHECKED' };\n  if (typeof val === 'string') {\n    const s = val.toUpperCase().replace('NAME_','').replace('DOB_','');\n    return { status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED' };\n  }\n  if (typeof val === 'object') {\n    const s = String(val.status || 'NOT_CHECKED').toUpperCase().replace('NAME_','').replace('DOB_','');\n    return {\n      status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED',\n      details: val.details || null,\n      userProvided: val.userProvided || null,\n      documentExtracted: val.documentExtracted || null\n    };\n  }\n  return { status: 'NOT_CHECKED' };\n}\n\nfunction toFlag(f) {\n  if (typeof f === 'string') return { severity: 'CRITICAL', code: f, message: f.replace(/_/g, ' ').toLowerCase() };\n  return { severity: f.severity || 'CRITICAL', code: f.code || 'UNKNOWN', message: f.message || f.code || 'Unknown issue' };\n}\n\nconst a = extractJSON(rawAnalysis);\n\nif (!a) {\n  console.log('[RESULT] PARSE FAILED');\n  const failAnalysis = {\n    documentDetected: false, detectedDocumentType: 'unknown', detectedDocumentTypeLabel: 'Unknown',\n    documentTypeMatch: false, detectedSide: context.documentSide || 'front', sideMatchesSelected: false,\n    userSelectedType: context.selectedDocumentType || 'unknown', userSelectedTypeLabel: 'Unknown',\n    extractedFields: {}, validationResults: {\n      nameMatch: { status: 'NOT_CHECKED' }, dobMatch: { status: 'NOT_CHECKED' },\n      addressMatch: { status: 'NOT_CHECKED' }, expirationStatus: 'UNKNOWN', photoIntegrity: 'CLEAR'\n    },\n    flags: [{ severity: 'CRITICAL', code: 'ANALYSIS_FAILED', message: 'Could not analyze this document image.' }],\n    complianceEligibility: false, nextAction: 'RETAKE_PHOTO', humanReviewRequired: true,\n    reviewReason: 'Gemini response could not be parsed'\n  };\n  return [{ json: { success: false, requestId: context.requestId, source: 'n8n-gemini-vision',\n    s3FileKey: context.s3FileKey || null, s3FileUrl: context.s3FileUrl || null,\n    userMessage: 'We could not read this document. Please retake the photo with better lighting.',\n    analysis: failAnalysis } }];\n}\n\nconst vr = a.validationResults || {};\nconst bc = a.booleanChecks || {};\nconst ef = a.extractedFields || {};\n\nconst rawCompliance = typeof a.complianceEligibility === 'boolean' ? a.complianceEligibility\n  : typeof a.complianceEligibility === 'object' ? Boolean(a.complianceEligibility?.canContinue)\n  : Boolean(bc.canContinue);\n\nlet flags = Array.isArray(a.flags) ? a.flags.map(toFlag) : [];\n\nfunction isFutureIssueDateProblem(value) {\n  const text = String(value || '').toUpperCase();\n  return text.includes('ISSUE DATE') && (text.includes('FUTURE') || text.includes('NOT YET VALID') || text.includes('NOT-YET-VALID'));\n}\nfunction isFutureIssueDateFlag(f) {\n  const code = String(f.code || '').toUpperCase();\n  const message = String(f.message || '').toUpperCase();\n  return ((code.includes('ISSUE') && code.includes('FUTURE')) || code.includes('NOT_YET_VALID') || isFutureIssueDateProblem(message));\n}\nconst removedFutureIssueDateFlag = flags.some(isFutureIssueDateFlag);\nflags = flags.filter(f => !isFutureIssueDateFlag(f));\nif (removedFutureIssueDateFlag) console.log('[SAFETY] Removed future issue-date flag; issue_date is informational only.');\n\nfunction isCopyOrScreenshotProblem(value) {\n  const text = String(value || '').toUpperCase();\n  return text.includes('DOCUMENT_COPY_OR_SCREENSHOT') || text.includes('SCREENSHOT') || text.includes('SCREEN CAPTURE') || text.includes('PHOTO OF A SCREEN') || text.includes('XEROX') || text.includes('PHOTOCOPY') || text.includes('SCANNED COPY') || text.includes('SCAN OF') || text.includes('PRINTED COPY') || text.includes('BLACK-AND-WHITE COPY') || text.includes('BLACK AND WHITE COPY') || text.includes('DIGITAL COPY');\n}\nfunction isCopyOrScreenshotFlag(f) {\n  return isCopyOrScreenshotProblem(f.code) || isCopyOrScreenshotProblem(f.message);\n}\nconst modelReportedCopyOrScreenshot = flags.some(isCopyOrScreenshotFlag) || isCopyOrScreenshotProblem(a.userMessage);\nif (modelReportedCopyOrScreenshot && !flags.some(f => f.code === 'DOCUMENT_COPY_OR_SCREENSHOT')) {\n  flags.push({ severity: 'CRITICAL', code: 'DOCUMENT_COPY_OR_SCREENSHOT', message: 'Document appears to be a screenshot, scan, photocopy, or xerox copy instead of the original physical document.' });\n  console.log('[SAFETY] Auto-injected CRITICAL DOCUMENT_COPY_OR_SCREENSHOT flag');\n}\nflags.forEach(f => { if (f.code === 'DOCUMENT_COPY_OR_SCREENSHOT') f.severity = 'CRITICAL'; });\n\nconst nmStatus = (typeof vr.nameMatch === 'object' && vr.nameMatch ? (vr.nameMatch.status || '') : (typeof vr.nameMatch === 'string' ? vr.nameMatch : '')).toUpperCase();\nconst dbStatus = (typeof vr.dobMatch === 'object' && vr.dobMatch ? (vr.dobMatch.status || '') : (typeof vr.dobMatch === 'string' ? vr.dobMatch : '')).toUpperCase();\nif (nmStatus === 'MISMATCH' && !flags.some(f => f.code === 'NAME_MISMATCH')) {\n  flags.push({ severity: 'CRITICAL', code: 'NAME_MISMATCH', message: 'Name on document does not match profile.' });\n  console.log('[SAFETY] Auto-injected CRITICAL NAME_MISMATCH flag');\n}\nif (dbStatus === 'MISMATCH' && !flags.some(f => f.code === 'DOB_MISMATCH')) {\n  flags.push({ severity: 'CRITICAL', code: 'DOB_MISMATCH', message: 'Date of birth on document does not match profile.' });\n  console.log('[SAFETY] Auto-injected CRITICAL DOB_MISMATCH flag');\n}\nflags.forEach(f => { if ((f.code === 'NAME_MISMATCH' || f.code === 'DOB_MISMATCH' || f.code === 'IMAGE_TAMPERING') && f.severity !== 'CRITICAL') { console.log('[SAFETY] Upgrading ' + f.code + ' to CRITICAL'); f.severity = 'CRITICAL'; } });\n\nconst hasCriticalFlag = flags.some(f => f.severity === 'CRITICAL');\nconst hasValidationMismatch = nmStatus === 'MISMATCH' || dbStatus === 'MISMATCH';\nconst modelMessageMentionsFutureIssueDate = isFutureIssueDateProblem(a.userMessage);\nconst documentDetectedCheck = Boolean(a.documentDetected);\nconst documentTypeMatchCheck = a.documentTypeMatch !== undefined ? Boolean(a.documentTypeMatch) : Boolean(bc.documentTypeMatchesSelection);\nconst sideMatchesCheck = a.sideMatchesSelected !== undefined ? Boolean(a.sideMatchesSelected) : Boolean(bc.sideMatchesSelection !== false);\nconst modelRejectedOnlyForFutureIssueDate = (removedFutureIssueDateFlag || modelMessageMentionsFutureIssueDate) && documentDetectedCheck && documentTypeMatchCheck && sideMatchesCheck && !hasCriticalFlag && !hasValidationMismatch;\nconst complianceEligibility = (rawCompliance || modelRejectedOnlyForFutureIssueDate) && !hasCriticalFlag && !hasValidationMismatch;\n\nconst labels = { 'drivers-license':'US Driver\\'s License','state-id':'US State ID Card','passport':'US Passport',\n  'passport-card':'US Passport Card','permanent-resident-card':'US Permanent Resident Card',\n  'employment-authorization-card':'US Employment Authorization Card','military-id':'US Military ID','unknown':'Unknown Document' };\n\nlet detectedType = a.detectedDocumentType || context.selectedDocumentType || 'unknown';\n\nif (detectedType === 'passport-card') {\n  const allFields = JSON.stringify(ef).toUpperCase();\n  const hasBookMRZ = allFields.includes('P<USA');\n  const labelMentionsBook = (a.detectedDocumentTypeLabel || '').toUpperCase().includes('PASSPORT BOOK');\n  const hasMultiplePages = allFields.includes('BOOKLET') || allFields.includes('BOOK');\n  if (hasBookMRZ || labelMentionsBook || hasMultiplePages) {\n    console.log('[SAFETY] Auto-correcting passport-card -> passport (book cues detected)');\n    detectedType = 'passport';\n    a.detectedDocumentType = 'passport';\n    a.detectedDocumentTypeLabel = 'US Passport';\n    if (context.selectedDocumentType === 'passport') a.documentTypeMatch = true;\n  }\n}\nif (detectedType === 'passport') {\n  const labelSaysCard = (a.detectedDocumentTypeLabel || '').toUpperCase().includes('PASSPORT CARD');\n  if (labelSaysCard) { a.detectedDocumentTypeLabel = 'US Passport'; }\n}\nconst selectedType = a.userSelectedType || context.selectedDocumentType || 'unknown';\n\nconst normalizedAnalysis = {\n  documentDetected: Boolean(a.documentDetected),\n  userSelectedType: selectedType,\n  userSelectedTypeLabel: labels[selectedType] || selectedType,\n  detectedDocumentType: detectedType,\n  detectedDocumentTypeLabel: a.detectedDocumentTypeLabel || labels[detectedType] || detectedType,\n  documentTypeMatch: a.documentTypeMatch !== undefined ? Boolean(a.documentTypeMatch) : Boolean(bc.documentTypeMatchesSelection),\n  detectedSide: a.detectedSide || context.documentSide || 'front',\n  sideMatchesSelected: a.sideMatchesSelected !== undefined ? Boolean(a.sideMatchesSelected) : Boolean(bc.sideMatchesSelection !== false),\n  extractedFields: ef,\n  validationResults: {\n    nameMatch: toFieldMatch(vr.nameMatch),\n    dobMatch: toFieldMatch(vr.dobMatch),\n    addressMatch: toFieldMatch(vr.addressMatch || 'NOT_CHECKED'),\n    expirationStatus: vr.expirationStatus || 'UNKNOWN',\n    photoIntegrity: vr.photoIntegrity || 'CLEAR'\n  },\n  flags,\n  complianceEligibility,\n  nextAction: modelReportedCopyOrScreenshot ? 'RETAKE_PHOTO' : (a.nextAction || (complianceEligibility ? 'CONTINUE' : 'HALT_VERIFICATION')),\n  humanReviewRequired: Boolean(a.humanReviewRequired ?? !complianceEligibility),\n  reviewReason: a.reviewReason || null\n};\n\nconsole.log('\\n========== VERIFICATION LOG ==========');\nconsole.log('[ID] request=' + context.requestId + ' s3Key=' + (context.s3FileKey || 'none'));\nconsole.log('[DOC] detected=' + normalizedAnalysis.documentDetected + ' type=' + normalizedAnalysis.detectedDocumentType + ' match=' + normalizedAnalysis.documentTypeMatch);\nconsole.log('[DOC] side=' + normalizedAnalysis.detectedSide + ' sideMatch=' + normalizedAnalysis.sideMatchesSelected);\nconsole.log('[EXTRACT] name=' + (ef.first_name||'?') + ' ' + (ef.last_name||'?') + ' DOB=' + (ef.date_of_birth||'?') + ' EXP=' + (ef.expiration_date||'?'));\nconsole.log('[PROFILE] ' + context.profile?.legalFirstName + ' ' + context.profile?.legalLastName + ' DOB=' + context.profile?.dateOfBirth);\nconsole.log('[CHECK] name=' + normalizedAnalysis.validationResults.nameMatch.status + ' dob=' + normalizedAnalysis.validationResults.dobMatch.status + ' exp=' + normalizedAnalysis.validationResults.expirationStatus);\nconsole.log('[DECISION] compliance=' + complianceEligibility + ' action=' + normalizedAnalysis.nextAction + ' review=' + normalizedAnalysis.humanReviewRequired);\nconsole.log('[FLAGS] ' + JSON.stringify(normalizedAnalysis.flags));\nconst finalUserMessage = modelReportedCopyOrScreenshot\n  ? 'Please upload a clear photo of the original physical document. Screenshots, scans, photocopies, and xerox copies cannot be accepted.'\n  : (modelMessageMentionsFutureIssueDate\n    ? (complianceEligibility ? 'Your document has been verified successfully.' : 'There was an issue verifying your document. Please check the details below.')\n    : (a.userMessage || (complianceEligibility ? 'Your document has been verified successfully.' : 'There was an issue verifying your document. Please check the details below.')));\nconsole.log('[MSG] ' + (finalUserMessage || 'none'));\nconsole.log('=======================================\\n');\n\nreturn [{ json: {\n  success: true,\n  requestId: context.requestId,\n  source: 'n8n-gemini-vision',\n  s3FileKey: context.s3FileKey || null,\n  s3FileUrl: context.s3FileUrl || null,\n  userMessage: finalUserMessage,\n  analysis: normalizedAnalysis\n} }];"
+      },
+      "id": "83d793bf-cb35-4f15-bcc1-a4576869ed55",
+      "name": "Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        21408,
+        13136
+      ]
+    }
+  ],
+  "connections": {
+    "Identity Verification Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          {
+            "node": "Is Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Convert + Sign for S3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload ID Image To S3": {
+      "main": [
+        [
+          {
+            "node": "Prepare Context Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build S3 Upload Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build S3 Upload Error": {
+      "main": [
+        [
+          {
+            "node": "Respond S3 Upload Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Context Data": {
+      "main": [
+        [
+          {
+            "node": "Analyze ID Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze ID Document": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Fallback Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Fallback Request": {
+      "main": [
+        [
+          {
+            "node": "Analyze ID Document (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze ID Document (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Verification Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert + Sign for S3": {
+      "main": [
+        [
+          {
+            "node": "Upload ID Image To S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": false
+  },
+  "versionId": "identity-verification-native-aws-s3-dev",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "5af3afb38f8674a00c025a9c92d12ea4b38dfe8e9127a5a712d25099414396a2"
+  },
+  "tags": [
+    {
+      "updatedAt": "2025-12-09T05:42:23.502Z",
+      "createdAt": "2025-12-09T05:42:23.502Z",
+      "id": "ce0fAv2lwAvvRA9e",
+      "name": "test"
+    }
+  ],
+  "pinData": {}
+}

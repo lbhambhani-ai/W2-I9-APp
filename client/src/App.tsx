@@ -3,9 +3,12 @@ import type { ErrorInfo, ReactNode } from "react";
 import { FaceDetector as MediaPipeFaceDetector, FilesetResolver } from "@mediapipe/tasks-vision";
 import type {
   AuditAttemptEvent,
+  AuditFlowCompleteEvent,
   AuditLogEvent,
   AuditResultStatus,
+  AuditSessionStartEvent,
   AuditSummaryEvent,
+  AuditUserSnapshot,
   ConfirmedW2Profile,
   DocumentSide,
   GovernmentIdType,
@@ -14,12 +17,15 @@ import type {
   InitialIdentity,
   ValidationResult
 } from "../../shared/types";
-import { buildReminderIssues, googleDriveFileUrl, summarizeAuditAttempts, type ReminderIssue } from "../../shared/audit";
+import { buildReminderIssues, s3FileUrlFromKey, summarizeAuditAttempts, type ReminderIssue } from "../../shared/audit";
 import {
+  documentTypeMismatchMessage,
   governmentIdTypeLabel,
   normalizeSsn,
   validateW2Profile,
-  validateWorkBrightSubmission
+  validateWorkBrightSubmission,
+  VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE,
+  I9_EXPIRY_EXCEPTION_MESSAGES
 } from "../../shared/validation";
 import { duplicateSsns } from "../../shared/fixtures";
 
@@ -74,8 +80,8 @@ const onboardingScreens = [
   "Date of Birth",
   "W-2 Onboarding Prompt",
   "W-2 Intro",
-  "Identity Verification",
-  "Government ID",
+  "Document Validation",
+  "Government-Issued ID",
   "Review Profile Details"
 ];
 
@@ -111,8 +117,8 @@ type DocImageState = {
   analysis: IdentityVerificationAnalysis | null;
   status: "idle" | "analyzing" | "error" | "success";
   message: string;
-  googleDriveFileId?: string;
-  googleDriveFileUrl?: string;
+  s3FileKey?: string;
+  s3FileUrl?: string;
 };
 
 type I9State = {
@@ -136,18 +142,41 @@ type I9State = {
 };
 
 const CITIZENSHIP_OPTIONS: { value: CitizenshipStatus; label: string; description: string }[] = [
-  { value: "us_citizen", label: "A citizen of the United States", description: "" },
-  { value: "noncitizen_national", label: "A noncitizen national of the United States", description: "" },
-  { value: "lawful_permanent_resident", label: "A lawful permanent resident", description: "Alien Registration Number / USCIS Number" },
-  { value: "noncitizen_authorized", label: "A noncitizen authorized to work", description: "Until expiration date" }
+  {
+    value: "us_citizen",
+    label: "A citizen of the United States",
+    description:
+      "Born in the US or naturalized citizen."
+  },
+  {
+    value: "noncitizen_national",
+    label: "A noncitizen national of the United States",
+    description:
+      "Born in American Samoa or Swains Island; owes permanent allegiance to the U.S. but is not a citizen."
+  },
+  {
+    value: "lawful_permanent_resident",
+    label: "A lawful permanent resident",
+    description:
+      "You have a Permanent Resident Card (Form I-551), also known as a \"Green Card.\" You'll need your Alien Registration Number / USCIS Number."
+  },
+  {
+    value: "noncitizen_authorized",
+    label: "A noncitizen authorized to work",
+    description:
+      "You have temporary work authorization (e.g. EAD, H-1B, OPT). You'll enter an expiration date and an A-Number, I-94, or foreign passport number."
+  }
 ];
 
 const LIST_A_DOCUMENTS: DocumentEntry[] = [
   { id: "us_passport", label: "U.S. Passport", availableFor: ["us_citizen", "noncitizen_national"] },
   { id: "us_passport_card", label: "U.S. Passport Card", availableFor: ["us_citizen", "noncitizen_national"] },
-  { id: "permanent_resident_card", label: "Permanent Resident Card (Green Card)", availableFor: ["lawful_permanent_resident"] },
+  { id: "permanent_resident_card", label: "Permanent Resident Card (I-551)", availableFor: ["lawful_permanent_resident"] },
   { id: "employment_auth_doc", label: "Employment Authorization Document (EAD)", availableFor: ["noncitizen_authorized"] },
-  { id: "foreign_passport_i551", label: "Foreign Passport with I-551 Stamp", availableFor: ["lawful_permanent_resident"] },
+  { id: "foreign_passport_i551", label: "Foreign Passport with Temporary I-551 Stamp", availableFor: ["lawful_permanent_resident"] },
+  { id: "mriv_foreign_passport", label: "Foreign Passport with Machine-Readable Immigrant Visa (MRIV)", availableFor: ["lawful_permanent_resident"] },
+  { id: "expired_green_card_i797", label: "Expired Green Card with Form I-797 (Notice of Action)", availableFor: ["lawful_permanent_resident"] },
+  { id: "i94_with_i551_stamp", label: "Form I-94 with I-551 Stamp and Photograph", availableFor: ["lawful_permanent_resident"] },
   { id: "foreign_passport_i94", label: "Foreign Passport with I-94", availableFor: ["noncitizen_authorized"] }
 ];
 
@@ -189,11 +218,14 @@ const DOC_ID_TO_GOV_TYPE: Record<string, GovernmentIdType> = {
   permanent_resident_card: "permanent-resident-card",
   employment_auth_doc: "employment-authorization-card",
   foreign_passport_i551: "passport",
-  foreign_passport_i94: "passport",
+  mriv_foreign_passport: "passport",
+  expired_green_card_i797: "permanent-resident-card",
+  i94_with_i551_stamp: "unknown",
+  foreign_passport_i94: "foreign-passport-i94",
   receipt_list_a: "unknown",
   drivers_license: "drivers-license",
   state_id_card: "state-id",
-  school_id: "unknown",
+  school_id: "school-id",
   voter_registration: "unknown",
   military_card: "military-id",
   military_dependent: "military-id",
@@ -257,6 +289,15 @@ function createSessionId() {
   return globalThis.crypto?.randomUUID?.() ?? `session_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
+function readIntercomUrlParams(): { intercomUserId?: string; intercomEmail?: string; intercomConversationId?: string } {
+  if (typeof window === "undefined") return {};
+  const params = new URLSearchParams(window.location.search);
+  const uid = params.get("uid") || undefined;
+  const email = params.get("email") || undefined;
+  const cid = params.get("cid") || undefined;
+  return { intercomUserId: uid, intercomEmail: email, intercomConversationId: cid };
+}
+
 function postAuditEvent(event: AuditLogEvent) {
   void fetch("/api/audit-log", {
     method: "POST",
@@ -267,18 +308,14 @@ function postAuditEvent(event: AuditLogEvent) {
   });
 }
 
-function auditProfileSnapshot(identity: InitialIdentity, profile: ConfirmedW2Profile) {
+function auditProfileSnapshot(identity: InitialIdentity, profile: ConfirmedW2Profile): AuditUserSnapshot {
+  // Privacy: only name + email are retained in the audit log. DOB / phone are intentionally omitted.
   return {
-    accountId: identity.accountId,
     firstName: identity.firstName,
-    middleName: identity.middleName,
     lastName: identity.lastName,
     legalFirstName: profile.legalFirstName || identity.firstName,
-    legalMiddleName: profile.legalMiddleName || identity.middleName,
     legalLastName: profile.legalLastName || identity.lastName,
-    dateOfBirth: profile.dateOfBirth || identity.dateOfBirth,
-    email: profile.email || identity.email,
-    phone: profile.phone || identity.phone
+    email: profile.email || identity.email
   };
 }
 
@@ -304,16 +341,50 @@ export function App() {
   const directScreen = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("screen")
     : null;
-  const [step, setStep] = useState(() => directScreen === "feedback" ? onboardingScreens.length + 1 : 0);
+  const fullCapture = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("fullcapture") === "1"
+    : false;
+  if (fullCapture && typeof document !== "undefined") {
+    document.documentElement.classList.add("full-capture-mode");
+  }
+  const directStep = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("step")
+    : null;
+  const [step, setStep] = useState(() => {
+    if (directScreen === "feedback") return onboardingScreens.length + 1;
+    if (directStep !== null) return parseInt(directStep, 10);
+    return 0;
+  });
   const [identity, setIdentity] = useState<InitialIdentity>(defaultIdentity);
   const [profile, setProfile] = useState<ConfirmedW2Profile>(defaultProfile);
   const [selfieImage, setSelfieImage] = useState<string | null>(null);
   const [w2Validation, setW2Validation] = useState<ValidationResult | null>(null);
-  const [workBrightStep, setWorkBrightStep] = useState(() => directScreen === "feedback" ? 6 : 0);
+  const directWbStep = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("wbstep")
+    : null;
+  const [workBrightStep, setWorkBrightStep] = useState(() => {
+    if (directScreen === "feedback") return 6;
+    if (directWbStep !== null) return parseInt(directWbStep, 10);
+    return 0;
+  });
   const [finalStatus, setFinalStatus] = useState("");
   const [sessionId] = useState(createSessionId);
+  const [intercomParams] = useState(readIntercomUrlParams);
   const [auditAttempts, setAuditAttempts] = useState<AuditAttemptEvent[]>([]);
   const auditAttemptCountsRef = useRef<Record<AuditAttemptEvent["flow"], number>>({ identity: 0, i9: 0 });
+
+  // Fire once on first load so we know who opened the app and when
+  useEffect(() => {
+    const event: AuditSessionStartEvent = {
+      recordKind: "session_start",
+      sessionId,
+      timestamp: new Date().toISOString(),
+      landingUrl: window.location.href,
+      ...intercomParams
+    };
+    postAuditEvent(event);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const initialName = `${identity.firstName || "Your first name"} ${identity.lastName || "Your last name"}`;
 
@@ -328,6 +399,25 @@ export function App() {
 
   function updateProfile(field: keyof ConfirmedW2Profile, value: string) {
     setProfile((current) => ({ ...current, [field]: value }));
+    setW2Validation(null);
+  }
+
+  function saveIdentityProfileCorrection(correction: IdentityProfileCorrection) {
+    setIdentity((current) => ({
+      ...current,
+      firstName: correction.legalFirstName,
+      middleName: correction.legalMiddleName,
+      lastName: correction.legalLastName,
+      dateOfBirth: correction.dateOfBirth
+    }));
+    setProfile((current) => ({
+      ...current,
+      legalFirstName: correction.legalFirstName,
+      legalMiddleName: correction.legalMiddleName,
+      legalLastName: correction.legalLastName,
+      suffix: correction.suffix,
+      dateOfBirth: correction.dateOfBirth
+    }));
     setW2Validation(null);
   }
 
@@ -399,6 +489,16 @@ export function App() {
       feedback: { rating, comments }
     };
     postAuditEvent(event);
+
+    const flowCompleteEvent: AuditFlowCompleteEvent = {
+      recordKind: "flow_complete",
+      sessionId,
+      timestamp: new Date().toISOString(),
+      feedbackRating: rating,
+      feedbackComments: comments,
+      ...intercomParams
+    };
+    postAuditEvent(flowCompleteEvent);
   }
 
   if (step >= onboardingScreens.length + 1) {
@@ -414,6 +514,16 @@ export function App() {
           onSubmit={submitWorkBright}
           onAuditAttempt={recordAuditAttempt}
           onFeedbackSubmit={submitFeedbackSummary}
+          onAppRedirect={(context) => {
+            postAuditEvent({
+              recordKind: "app_redirect_click",
+              sessionId,
+              timestamp: new Date().toISOString(),
+              context,
+              deepLink: "instawork://profile/w2-onboarding",
+              ...intercomParams
+            });
+          }}
         />
       </OnboardingShell>
     );
@@ -455,7 +565,7 @@ export function App() {
         onSelfieCapture={setSelfieImage}
         onNext={() => setStep((current) => Math.min(current + 1, onboardingScreens.length - 1))}
         onBack={() => setStep((current) => Math.max(current - 1, 0))}
-        onEditIdentityProfile={() => setStep(2)}
+        onSaveIdentityProfileCorrection={saveIdentityProfileCorrection}
         onAuditAttempt={recordAuditAttempt}
         onJumpToW2={() => setStep(onboardingScreens.length - 1)}
       />
@@ -484,10 +594,20 @@ function Shell({ phase, children }: { phase: string; children: React.ReactNode }
   );
 }
 
+function isFullCaptureMode() {
+  return typeof window !== "undefined" && new URLSearchParams(window.location.search).get("fullcapture") === "1";
+}
+
 function OnboardingShell({ camera = false, children }: { camera?: boolean; children: React.ReactNode }) {
+  const fullCapture = isFullCaptureMode();
+
   return (
-    <main className="page instawork-page">
-      <div className={`app-phone ${camera ? "camera-mode" : ""}`}>
+    <main className={`page instawork-page ${fullCapture ? "full-capture-mode" : ""}`}>
+      <div className={`app-phone ${camera ? "camera-mode" : ""} ${fullCapture ? "full-capture-phone" : ""}`}>
+        <div className="sim-global-banner" role="note" aria-label="Simulation notice">
+          <span className="sim-global-dot" aria-hidden="true" />
+          Experience the simulation
+        </div>
         {children}
       </div>
     </main>
@@ -504,7 +624,7 @@ function InstaworkOnboardingScreen({
   onSelfieCapture,
   onNext,
   onBack,
-  onEditIdentityProfile,
+  onSaveIdentityProfileCorrection,
   onAuditAttempt,
   onJumpToW2
 }: {
@@ -517,7 +637,7 @@ function InstaworkOnboardingScreen({
   onSelfieCapture: (imageDataUrl: string) => void;
   onNext: () => void;
   onBack: () => void;
-  onEditIdentityProfile: () => void;
+  onSaveIdentityProfileCorrection: (correction: IdentityProfileCorrection) => void;
   onAuditAttempt: (event: Omit<AuditAttemptEvent, "recordKind" | "sessionId" | "timestamp" | "attemptNumber" | "profile">) => void;
   onJumpToW2: () => void;
 }) {
@@ -565,7 +685,7 @@ function InstaworkOnboardingScreen({
     return <IdentityVerificationConsentScreen onNext={onNext} onBack={onBack} />;
   }
   if (step === 6) {
-    return <GovernmentIdUploadVerificationScreen profile={profile} onNext={onNext} onBack={onBack} onEditProfile={onEditIdentityProfile} onAuditAttempt={onAuditAttempt} />;
+    return <GovernmentIdUploadVerificationScreen profile={profile} onNext={onNext} onBack={onBack} onSaveProfileCorrection={onSaveIdentityProfileCorrection} onAuditAttempt={onAuditAttempt} />;
   }
   return (
     <section className="native-screen dob-screen">
@@ -588,49 +708,33 @@ function IdentityVerificationConsentScreen({ onNext, onBack }: { onNext: () => v
 
   return (
     <section className="identity-consent-screen">
+
       <header className="identity-consent-header">
         <button className="identity-close" onClick={onBack} aria-label="Back">×</button>
-        <strong>Identity verification</strong>
+        <strong>Document validation</strong>
       </header>
       <div className="identity-consent-content">
-        <h1>Verify your identity to start your W-2 process</h1>
+        <h1>Verify your Identity</h1>
         <p className="identity-intro">
           To verify your identity, submit a clear photo of a government ID and a selfie. The process will only take a few
           minutes.
         </p>
-        <h2>Biometric Information Notice and Consent</h2>
+        <h2>Simulation Consent</h2>
         <p>
-          This Notice and Consent for the Collection of Biometric Information describes how Instawork and its vendor,
-          Persona Identities Inc., collect, use, retain, and disclose your biometric information in connection with
-          identity verification.
+          This document validation flow is for simulation only. It is designed to demonstrate how a worker could review
+          and confirm identity information during W-2 onboarding.
         </p>
         <p>
-          <strong>1. What We Collect.</strong> When you create an account, our Services may require you to upload one or
-          more images of your government-issued identification documents as well as selfie photographs using your mobile
-          or other device.
+          <strong>1. What You May Submit.</strong> You may upload or capture a government ID image and selfie image so the
+          demo can simulate document and identity checks.
         </p>
         <p>
-          <strong>2. Disclosure, Use, and Retention of Biometric Information.</strong> Instawork and its vendor may
-          collect, use, disclose, and otherwise process your biometric information only for identity verification,
-          fraud prevention, and platform safety purposes.
+          <strong>2. How This Demo Uses Images.</strong> Images are used only to run the simulated verification steps shown
+          in this experience. We are not storing sensitive documents anywhere as part of this simulation.
         </p>
         <p>
-          <strong>3. Refusal to Provide Biometric Information.</strong> You may refuse to consent to biometric
-          collection. If you refuse, you may not be able to use or continue to use services that require identity
-          verification.
-        </p>
-        <p>
-          <strong>4. Revocation of Consent.</strong> You may revoke your consent at any time by contacting Instawork at
-          privacy@instawork.com.
-        </p>
-        <p>
-          <strong>5. Validity of Electronic Acceptance.</strong> Your electronic acceptance has the same force and effect
-          as a written ink signature.
-        </p>
-        <p>
-          <strong>6. Consent.</strong> By selecting Yes below and clicking Begin verifying, you acknowledge and agree
-          that you have read this notice and consent to the collection, use, retention, and disclosure of biometric
-          information as described above.
+          <strong>3. Your Consent.</strong> By selecting Yes below and clicking Begin verifying, you agree to continue
+          with this simulation.
         </p>
         <fieldset className="consent-options">
           <legend>Do you give consent?</legend>
@@ -657,10 +761,6 @@ function IdentityVerificationConsentScreen({ onNext, onBack }: { onNext: () => v
         </fieldset>
         <button className="blue-cta" onClick={onNext} disabled={consent !== "yes"}>Begin verifying</button>
       </div>
-      <footer className="persona-footer">
-        <span>◎ English⌄</span>
-        <strong>SECURED WITH<br />persona</strong>
-      </footer>
     </section>
   );
 }
@@ -725,6 +825,36 @@ function fieldLabel(key: string): string {
   return FIELD_LABELS[key] ?? key.replace(/_/g, " ");
 }
 
+const DATE_FIELD_KEYS = new Set([
+  "date_of_birth", "issue_date", "expiration_date", "date_of_issue", "date_of_expiration"
+]);
+
+function formatDisplayDateLong(value: string): string {
+  if (!value || value === "N/A") return value;
+  let y: number, m: number, day: number;
+  const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const slashMDY = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const monthNameDY = value.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  const monthNameDY2 = value.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (iso) {
+    y = Number(iso[1]); m = Number(iso[2]) - 1; day = Number(iso[3]);
+  } else if (slashMDY) {
+    m = Number(slashMDY[1]) - 1; day = Number(slashMDY[2]); y = Number(slashMDY[3]);
+  } else if (monthNameDY) {
+    const parsed = new Date(`${monthNameDY[2]} ${monthNameDY[1]}, ${monthNameDY[3]}`);
+    if (isNaN(parsed.getTime())) return value;
+    y = parsed.getFullYear(); m = parsed.getMonth(); day = parsed.getDate();
+  } else if (monthNameDY2) {
+    const parsed = new Date(`${monthNameDY2[1]} ${monthNameDY2[2]}, ${monthNameDY2[3]}`);
+    if (isNaN(parsed.getTime())) return value;
+    y = parsed.getFullYear(); m = parsed.getMonth(); day = parsed.getDate();
+  } else {
+    return value;
+  }
+  const d = new Date(y, m, day);
+  return d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
 function comparisonClass(status: string): string {
   switch (status) {
     case "MATCH":
@@ -741,6 +871,8 @@ function comparisonClass(status: string): string {
 function expirationClass(status: string): string {
   switch (status) {
     case "VALID":
+    case "NOT_EXPIRED":
+    case "NOT_APPLICABLE":
       return "ok";
     case "EXPIRES_SOON":
       return "warn";
@@ -774,7 +906,7 @@ class AnalysisPanelBoundary extends Component<{ children: ReactNode }, { hasErro
   render() {
     if (this.state.hasError) {
       return (
-        <section className="identity-analysis-panel" aria-label="Identity verification analysis">
+        <section className="identity-analysis-panel" aria-label="Document validation analysis">
           <header className="analysis-header">
             <h2>Document analysis</h2>
             <span className="analysis-status fail">Rendering error</span>
@@ -794,6 +926,135 @@ class AnalysisPanelBoundary extends Component<{ children: ReactNode }, { hasErro
   }
 }
 
+function ProfileDobPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [openMenu, setOpenMenu] = useState<"month" | "day" | "year" | null>(null);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    function handleClick(e: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setOpenMenu(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [openMenu]);
+
+  const MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ];
+
+  const parsed = value ? new Date(value + "T00:00:00") : null;
+  const selMonth = parsed ? parsed.getMonth() + 1 : 0;
+  const selDay   = parsed ? parsed.getDate()       : 0;
+  const selYear  = parsed ? parsed.getFullYear()   : 0;
+
+  const currentYear = new Date().getFullYear();
+  const maxYear = currentYear - 18;
+  const minYear = currentYear - 80;
+  const years = Array.from({ length: maxYear - minYear + 1 }, (_, i) => maxYear - i);
+
+  const daysInMonth = (month: number, year: number) => {
+    if (!month) return 31;
+    return new Date(year || 2000, month, 0).getDate();
+  };
+  const maxDay = daysInMonth(selMonth, selYear);
+  const days = Array.from({ length: maxDay }, (_, i) => i + 1);
+
+  function emit(month: number, day: number, year: number) {
+    const safeDay = Math.min(day, daysInMonth(month, year));
+    if (month && safeDay && year) {
+      const mm = String(month).padStart(2, "0");
+      const dd = String(safeDay).padStart(2, "0");
+      onChange(`${year}-${mm}-${dd}`);
+    } else {
+      onChange("");
+    }
+  }
+
+  function renderMenu({
+    id,
+    placeholder,
+    value,
+    displayValue,
+    options,
+    onSelect
+  }: {
+    id: "month" | "day" | "year";
+    placeholder: string;
+    value: number;
+    displayValue: string;
+    options: { value: number; label: string }[];
+    onSelect: (value: number) => void;
+  }) {
+    const open = openMenu === id;
+    return (
+      <div className={`profile-dob-select${open ? " open" : ""}`}>
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={placeholder}
+          onClick={() => setOpenMenu(open ? null : id)}
+        >
+          <span className={value ? "" : "placeholder"}>{value ? displayValue : placeholder}</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+        {open && (
+          <div className="profile-dob-menu" role="listbox" aria-label={placeholder}>
+            {options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className={option.value === value ? "selected" : ""}
+                onClick={() => {
+                  onSelect(option.value);
+                  setOpenMenu(null);
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="profile-dob-picker" ref={pickerRef}>
+      {renderMenu({
+        id: "month",
+        placeholder: "Month",
+        value: selMonth,
+        displayValue: selMonth ? MONTHS[selMonth - 1] : "",
+        options: MONTHS.map((label, index) => ({ value: index + 1, label })),
+        onSelect: (month) => emit(month, selDay, selYear)
+      })}
+      {renderMenu({
+        id: "day",
+        placeholder: "Day",
+        value: selDay,
+        displayValue: selDay ? String(selDay) : "",
+        options: days.map((day) => ({ value: day, label: String(day) })),
+        onSelect: (day) => emit(selMonth, day, selYear)
+      })}
+      {renderMenu({
+        id: "year",
+        placeholder: "Year",
+        value: selYear,
+        displayValue: selYear ? String(selYear) : "",
+        options: years.map((year) => ({ value: year, label: String(year) })),
+        onSelect: (year) => emit(selMonth, selDay, year)
+      })}
+    </div>
+  );
+}
+
 function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAnalysis }) {
   const fieldEntries = Object.entries(analysis.extractedFields ?? {}).filter(([, value]) => value);
   const vr = analysis.validationResults ?? {} as IdentityVerificationAnalysis["validationResults"];
@@ -806,7 +1067,7 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
   return (
     <section
       className="identity-analysis-panel"
-      aria-label="Identity verification analysis"
+      aria-label="Document validation analysis"
     >
       <header className="analysis-header">
         <h2>Document analysis</h2>
@@ -817,7 +1078,7 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
         >
           {analysis.complianceEligibility
             ? "Eligible to continue"
-            : "Verification halted"}
+            : "Verification failed"}
         </span>
       </header>
       <dl className="analysis-meta">
@@ -836,10 +1097,6 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
           <dt>Detected side</dt>
           <dd>{analysis.detectedSide === "front" ? "Front" : "Back"}</dd>
         </div>
-        <div>
-          <dt>Next action</dt>
-          <dd>{(analysis.nextAction ?? "UNKNOWN").replace(/_/g, " ").toLowerCase()}</dd>
-        </div>
       </dl>
 
       {fieldEntries.length > 0 && (
@@ -849,7 +1106,7 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
             {fieldEntries.map(([key, value]) => (
               <li key={key}>
                 <span>{fieldLabel(key)}</span>
-                <strong>{value}</strong>
+                <strong>{DATE_FIELD_KEYS.has(key) ? formatDisplayDateLong(value ?? "") : value}</strong>
               </li>
             ))}
           </ul>
@@ -869,14 +1126,23 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
             <strong>{String(dobMatch.status ?? "NOT_CHECKED").replace(/_/g, " ")}</strong>
             {dobMatch.details && <em>{dobMatch.details}</em>}
           </li>
-          <li className={comparisonClass(addressMatch.status)}>
-            <span>Address</span>
-            <strong>{String(addressMatch.status ?? "NOT_CHECKED").replace(/_/g, " ")}</strong>
-            {addressMatch.details && <em>{addressMatch.details}</em>}
-          </li>
+
           <li className={expirationClass(expirationStatus)}>
-            <span>Expiration</span>
-            <strong>{expirationStatus.replace(/_/g, " ")}</strong>
+            <span>Document expiry</span>
+            <strong>{(() => {
+              const flagCodes = (analysis.flags ?? []).map(f => f.code);
+              if (flagCodes.includes("VENEZUELAN_PASSPORT_EXPIRY_BYPASS")) return "Not checked (Venezuelan passport)";
+              if (flagCodes.includes("EAD_AUTO_EXTENSION")) return "Auto-extended (Form I-797C)";
+              if (flagCodes.includes("I551_EXTENSION_NOTICE")) return "Extended (Form I-797)";
+              if (flagCodes.includes("ADIT_STAMP_ACCEPTED")) return "Accepted (I-551/ADIT stamp)";
+              if (flagCodes.includes("RECEIPT_DOCUMENT_ACCEPTED")) return "Receipt accepted (90-day rule)";
+              if (expirationStatus === "VALID" || expirationStatus === "NOT_EXPIRED") return "Not expired";
+              if (expirationStatus === "EXPIRED") return "Expired";
+              if (expirationStatus === "EXPIRES_SOON") return "Expires soon";
+              if (expirationStatus === "NOT_APPLICABLE") return "Not applicable";
+              if (expirationStatus === "NOT_CHECKED") return "Not checked";
+              return "Unknown";
+            })()}</strong>
           </li>
           <li className={photoClass(photoIntegrity)}>
             <span>Photo integrity</span>
@@ -885,44 +1151,222 @@ function IdentityAnalysisPanel({ analysis }: { analysis: IdentityVerificationAna
         </ul>
       </div>
 
-      {(analysis.flags ?? []).length > 0 && (
-        <div className="analysis-flags">
-          <h3>Flags</h3>
-          <ul>
-            {(analysis.flags ?? []).map((flag) => (
-              <li key={flag.code} className={(flag.severity ?? "INFO").toLowerCase()}>
-                <span className="severity">{flag.severity ?? "INFO"}</span>
-                <strong>{flag.code ?? "UNKNOWN"}</strong>
-                <em>{flag.message ?? ""}</em>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
 
-      {!analysis.complianceEligibility && (
-        <p className="analysis-review-note" role="status">
-          {(() => {
-            const issues: string[] = [];
-            const flags = analysis.flags ?? [];
-            if (flags.some(f => f.code === "WRONG_LIST" || f.code === "WRONG_DOCUMENT" || f.code === "DOCUMENT_TYPE_MISMATCH"))
-              issues.push("wrong document type uploaded");
-            if (flags.some(f => f.code === "NAME_MISMATCH") || nameMatch.status === "MISMATCH")
-              issues.push("name does not match your profile");
-            if (flags.some(f => f.code === "DOB_MISMATCH") || dobMatch.status === "MISMATCH")
-              issues.push("date of birth does not match your profile");
-            if (flags.some(f => f.code === "DOCUMENT_EXPIRED") || expirationStatus === "EXPIRED")
-              issues.push("document is expired");
-            if (flags.some(f => f.code === "IMAGE_QUALITY_LOW" || f.code === "PHOTO_BLURRED" || f.code === "NO_DOCUMENT_DETECTED"))
-              issues.push("image is unclear or no document detected");
-            if (flags.some(f => f.code === "STATUS_INELIGIBLE"))
-              issues.push("document not valid for your immigration status");
-            if (issues.length === 0) issues.push("verification did not pass");
-            return `Please fix: ${issues.join(", ")}. Upload the correct document or retake the photo.`;
-          })()}
-        </p>
-      )}
     </section>
+  );
+}
+
+type HubItemStatus = "failed" | "resolved" | "blocked" | "pending";
+type HubItem = {
+  id: string;
+  title: string;
+  detail: string;
+  status: HubItemStatus;
+  action?: { label: string; handler: () => void };
+  secondaryAction?: { label: string; handler: () => void };
+  isHardBlock?: boolean;
+};
+
+const I9_EXPIRY_EXCEPTION_CODES = new Set([
+  "EAD_AUTO_EXTENSION",
+  "I551_EXTENSION_NOTICE",
+  "ADIT_STAMP_ACCEPTED",
+  "VENEZUELAN_PASSPORT_EXPIRY_BYPASS",
+  "RECEIPT_DOCUMENT_ACCEPTED",
+]);
+
+function formatUserFacingLabel(label: string): string {
+  return (label || "document").replace(/^US\b/, "U.S.");
+}
+
+function withArticle(label: string): string {
+  return `${/^[aeiou]/i.test(label.trim()) ? "an" : "a"} ${label}`;
+}
+
+function deriveHubItems(
+  analysis: IdentityVerificationAnalysis,
+  handlers: {
+    onRetake: () => void;
+    onChangeSelection: () => void;
+    onUseDetectedType: (type: GovernmentIdType) => void;
+    onFixProfile: () => void;
+  }
+): HubItem[] {
+  const flags = analysis.flags ?? [];
+  const vr = analysis.validationResults ?? {} as IdentityVerificationAnalysis["validationResults"];
+
+  const hasDocTypeMismatch = hasDocumentTypeMismatch(analysis);
+  const hasQualityFail = hasImageQualityIssue(analysis);
+  const hasExpiryException = flags.some(f => I9_EXPIRY_EXCEPTION_CODES.has(f.code));
+  const hasExpired = !hasExpiryException && (flags.some(f => f.code === "DOCUMENT_EXPIRED") || vr.expirationStatus === "EXPIRED");
+  const hasNameMismatch = flags.some(f => f.code === "NAME_MISMATCH") || vr.nameMatch?.status === "MISMATCH";
+  const hasDobMismatch = flags.some(f => f.code === "DOB_MISMATCH") || vr.dobMatch?.status === "MISMATCH";
+
+  const items: HubItem[] = [];
+
+  if (hasDocTypeMismatch) {
+    const detectedType = analysis.detectedDocumentType as GovernmentIdType | undefined;
+    const detectedIsSelectable = Boolean(
+      detectedType &&
+      detectedType !== analysis.userSelectedType &&
+      US_GOVERNMENT_ID_TYPES.some((t) => t.value === detectedType),
+    );
+    const detectedLabel = detectedIsSelectable
+      ? (US_GOVERNMENT_ID_TYPES.find((t) => t.value === detectedType)?.label ?? analysis.detectedDocumentTypeLabel ?? "the detected document")
+      : "";
+
+    if (detectedIsSelectable && detectedType) {
+      items.push({
+        id: "doc_type",
+        title: "Wrong document type",
+        detail: `This looks like ${withArticle(formatUserFacingLabel(detectedLabel))}, not the ${formatUserFacingLabel(analysis.userSelectedTypeLabel || governmentIdTypeLabel(analysis.userSelectedType))} you selected. Use it as ${withArticle(formatUserFacingLabel(detectedLabel))}, or upload a different document.`,
+        status: "failed",
+        action: { label: `Use this as ${formatUserFacingLabel(detectedLabel)}`, handler: () => handlers.onUseDetectedType(detectedType) },
+        secondaryAction: { label: "Upload a different document", handler: handlers.onRetake },
+      });
+      return items;
+    }
+
+    items.push({
+      id: "doc_type",
+      title: "Wrong document type",
+      detail: selectedDocumentTypeMismatchMessage(analysis),
+      status: "failed",
+      action: { label: "Upload correct document", handler: handlers.onRetake },
+      secondaryAction: { label: "Change my selection", handler: handlers.onChangeSelection },
+    });
+    return items;
+  }
+
+  if (hasQualityFail) {
+    items.push({
+      id: "quality",
+      title: "Image is unclear",
+      detail: IMAGE_QUALITY_GUIDANCE,
+      status: "failed",
+      action: { label: "Retake photo", handler: handlers.onRetake },
+    });
+    return items;
+  }
+
+  if (hasExpired) {
+    items.push({
+      id: "expired",
+      title: "Document is expired",
+      detail: flags.find(f => f.code === "DOCUMENT_EXPIRED")?.message || "This document has expired. You must provide a valid, non-expired government ID.",
+      status: "failed",
+      isHardBlock: true,
+      action: { label: "Upload a valid document", handler: handlers.onRetake },
+    });
+  }
+
+  if (hasNameMismatch) {
+    items.push({
+      id: "name",
+      title: "Name does not match",
+      detail: NAME_MISMATCH_GUIDANCE,
+      status: hasExpired ? "pending" : "failed",
+      action: !hasExpired ? { label: "Fix my profile", handler: handlers.onFixProfile } : undefined,
+    });
+  }
+
+  if (hasDobMismatch) {
+    items.push({
+      id: "dob",
+      title: "Date of birth does not match",
+      detail: DOB_MISMATCH_GUIDANCE,
+      status: hasExpired ? "pending" : "failed",
+      action: !hasExpired ? { label: "Fix my profile", handler: handlers.onFixProfile } : undefined,
+    });
+  }
+
+  return items;
+}
+
+function hasDocumentTypeMismatch(analysis: IdentityVerificationAnalysis): boolean {
+  return !analysis.documentTypeMatch || (analysis.flags ?? []).some(flag => flag.code === "DOCUMENT_TYPE_MISMATCH");
+}
+
+function selectedDocumentTypeMismatchMessage(analysis: IdentityVerificationAnalysis): string {
+  return documentTypeMismatchMessage(analysis.userSelectedTypeLabel || governmentIdTypeLabel(analysis.userSelectedType));
+}
+
+function ResolutionHub({
+  items,
+  onClose,
+  onContinue,
+}: {
+  items: HubItem[];
+  onClose: () => void;
+  onContinue: () => void;
+}) {
+  const resolved = items.filter(i => i.status === "resolved").length;
+  const total = items.length;
+  const allResolved = resolved === total;
+
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleEsc);
+    return () => document.removeEventListener("keydown", handleEsc);
+  }, [onClose]);
+
+  const statusIcon = (status: HubItemStatus) => {
+    switch (status) {
+      case "resolved": return <span className="hub-icon hub-icon-resolved" aria-label="Resolved">&#x2713;</span>;
+      case "failed": return <span className="hub-icon hub-icon-failed" aria-label="Issue">&#x2717;</span>;
+      case "blocked": return <span className="hub-icon hub-icon-blocked" aria-label="Blocked">&#x26A0;</span>;
+      case "pending": return <span className="hub-icon hub-icon-pending" aria-label="Pending">&#x1F512;</span>;
+    }
+  };
+
+  return (
+    <div className="resolution-hub-backdrop" role="presentation" onClick={e => e.target === e.currentTarget && onClose()}>
+      <section className="resolution-hub" role="dialog" aria-modal="true" aria-label="Resolution Hub">
+        <div className="resolution-hub-grab" aria-hidden="true" />
+        <button className="resolution-hub-close" onClick={onClose} aria-label="Close resolution hub">&times;</button>
+
+        <header className="resolution-hub-header">
+          <h2>Let's fix this</h2>
+          <p className="resolution-hub-progress-text">
+            {allResolved ? "All issues resolved" : `${resolved} of ${total} issues resolved`}
+          </p>
+          <div className="resolution-hub-progress-bar">
+            <div className={`resolution-hub-progress-fill${allResolved ? " hub-progress-complete" : ""}`} style={{ width: `${total ? (resolved / total) * 100 : 0}%` }} />
+          </div>
+        </header>
+
+        <ul className="resolution-hub-list">
+          {items.map(item => (
+            <li key={item.id} className={`resolution-hub-item hub-item-${item.status}`}>
+              {statusIcon(item.status)}
+              <div className="hub-item-content">
+                <strong>{item.title}</strong>
+                <p>{item.detail}</p>
+                {item.status === "failed" && (item.action || item.secondaryAction) && (
+                  <div className="hub-item-actions">
+                    {item.action && (
+                      <button className="hub-item-action" onClick={item.action.handler}>{item.action.label}</button>
+                    )}
+                    {item.secondaryAction && (
+                      <button className="hub-item-action hub-item-action-secondary" onClick={item.secondaryAction.handler}>{item.secondaryAction.label}</button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        {allResolved && (
+          <div className="resolution-hub-footer">
+            <button className="resolution-hub-cta hub-cta-success" onClick={onContinue}>
+              Continue
+            </button>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -934,6 +1378,11 @@ type IdUploadSideState = {
   status: "idle" | "analyzing" | "error" | "success";
 };
 
+type IdentityProfileCorrection = Pick<
+  ConfirmedW2Profile,
+  "legalFirstName" | "legalMiddleName" | "legalLastName" | "suffix" | "dateOfBirth"
+>;
+
 const emptyIdSideState: IdUploadSideState = {
   imageBase64: "",
   fileName: "",
@@ -942,37 +1391,382 @@ const emptyIdSideState: IdUploadSideState = {
   status: "idle"
 };
 
+export const NAME_MISMATCH_GUIDANCE = "Ensure that you're using your legal name, as it appears on your government-issued ID.";
+export const DOB_MISMATCH_GUIDANCE = "Ensure that you're using the correct date of birth, as it appears on your government-issued ID";
+export const IMAGE_QUALITY_GUIDANCE = "Please retake the photo. Reduce glare, fit the entire document in the picture, use good lighting, and make sure the image is not blurry.";
+export const DOCUMENT_VALIDATED_SUCCESS = "Document validated successfully.";
+
+const MOCK_ID_IMAGE = "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjI1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjI1MCIgZmlsbD0iI2UyZThmMCIgcng9IjEyIi8+PHJlY3QgeD0iMTYiIHk9IjE2IiB3aWR0aD0iMTEwIiBoZWlnaHQ9IjgwIiBmaWxsPSIjY2NkNWUzIiByeD0iOCIvPjx0ZXh0IHg9IjE0MCIgeT0iNDQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNDQ0Ij5KT1JEQU4gU01JVEg8L3RleHQ+PHRleHQgeD0iMTQwIiB5PSI2NCIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTIiIGZpbGw9IiM2NjYiPkRPQjogMDQvMTUvMTk5MjwvdGV4dD48dGV4dCB4PSIxNDAiIHk9IjgzIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSIxMiIgZmlsbD0iIzY2NiI+RVhQOiAwNC8xNS8yMDI4PC90ZXh0Pjx0ZXh0IHg9IjE2IiB5PSIxNjAiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNjY2Ij5EUklWRVJTIExJQ0VOU0UgLSBDQTwvdGV4dD48L3N2Zz4=";
+
+export function buildSimIdState(simId: string | null): { documentType: GovernmentIdType | ""; documents: Record<DocumentSide, IdUploadSideState> } | null {
+  if (!simId) return null;
+
+  const passAnalysis: IdentityVerificationAnalysis = {
+    userSelectedType: "drivers-license",
+    userSelectedTypeLabel: "US Driver's License",
+    detectedDocumentType: "drivers-license",
+    detectedDocumentTypeLabel: "US Driver's License",
+    documentTypeMatch: true,
+    documentDetected: true,
+    detectedSide: "front",
+    extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", expirationDate: "2028-04-15", licenseNumber: "D1234567" },
+    validationResults: {
+      nameMatch: { status: "MATCH" },
+      dobMatch: { status: "MATCH" },
+      addressMatch: { status: "NOT_CHECKED" },
+      expirationStatus: "VALID",
+      photoIntegrity: "CLEAR"
+    },
+    flags: [],
+    complianceEligibility: true,
+    nextAction: "CONTINUE",
+    humanReviewRequired: false
+  };
+
+  const makeFront = (analysis: IdentityVerificationAnalysis, status: IdUploadSideState["status"], message: string): IdUploadSideState => ({
+    imageBase64: MOCK_ID_IMAGE,
+    fileName: "license_front.jpg",
+    analysis,
+    status,
+    message
+  });
+
+  if (simId === "pass") {
+    return {
+      documentType: "drivers-license",
+      documents: { front: makeFront(passAnalysis, "success", DOCUMENT_VALIDATED_SUCCESS), back: { ...emptyIdSideState } }
+    };
+  }
+  if (simId === "name_mismatch") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      complianceEligibility: false,
+      nextAction: "HALT_VERIFICATION",
+      extractedFields: { ...passAnalysis.extractedFields, firstName: "Alex", lastName: "Johnson" },
+      validationResults: { ...passAnalysis.validationResults, nameMatch: { status: "MISMATCH", details: "Document: Alex Johnson | Profile: Jordan Smith" } },
+      flags: [{ code: "NAME_MISMATCH", severity: "CRITICAL" as const, message: "Name on document does not match your profile." }]
+    };
+    return { documentType: "drivers-license", documents: { front: makeFront(a, "error", NAME_MISMATCH_GUIDANCE), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "dob_mismatch") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      complianceEligibility: false,
+      nextAction: "HALT_VERIFICATION",
+      extractedFields: { ...passAnalysis.extractedFields, dateOfBirth: "1985-07-22" },
+      validationResults: { ...passAnalysis.validationResults, dobMatch: { status: "MISMATCH", details: "Document: 1985-07-22 | Profile: 1992-04-15" } },
+      flags: [{ code: "DOB_MISMATCH", severity: "CRITICAL" as const, message: "Date of birth does not match your profile." }]
+    };
+    return { documentType: "drivers-license", documents: { front: makeFront(a, "error", DOB_MISMATCH_GUIDANCE), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "wrong_doc") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      complianceEligibility: false,
+      nextAction: "RETAKE_PHOTO",
+      documentTypeMatch: false,
+      detectedDocumentType: "passport",
+      detectedDocumentTypeLabel: "U.S. Passport",
+      flags: [{ code: "DOCUMENT_TYPE_MISMATCH", severity: "CRITICAL" as const, message: "A passport was uploaded but Driver's License was expected." }]
+    };
+    return { documentType: "drivers-license", documents: { front: makeFront(a, "error", selectedDocumentTypeMismatchMessage(a)), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "quality_fail") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      complianceEligibility: false,
+      nextAction: "RETAKE_PHOTO",
+      documentDetected: false,
+      extractedFields: {},
+      validationResults: { nameMatch: { status: "NOT_CHECKED" }, dobMatch: { status: "NOT_CHECKED" }, addressMatch: { status: "NOT_CHECKED" }, expirationStatus: "UNKNOWN", photoIntegrity: "BLURRED" },
+      flags: [{ code: "IMAGE_QUALITY_LOW", severity: "CRITICAL" as const, message: "Image is too blurry. Please retake the photo." }]
+    };
+    return { documentType: "drivers-license", documents: { front: makeFront(a, "error", IMAGE_QUALITY_GUIDANCE), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "expired") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      complianceEligibility: false,
+      nextAction: "HALT_VERIFICATION",
+      extractedFields: { ...passAnalysis.extractedFields, expirationDate: "2020-01-15" },
+      validationResults: { ...passAnalysis.validationResults, expirationStatus: "EXPIRED" },
+      flags: [{ code: "DOCUMENT_EXPIRED", severity: "CRITICAL" as const, message: "Document expired on Jan 15, 2020." }]
+    };
+    return { documentType: "drivers-license", documents: { front: makeFront(a, "error", "Document is expired. Please provide a valid government ID."), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "venezuelan_pass") {
+    const a: IdentityVerificationAnalysis = {
+      ...passAnalysis,
+      userSelectedType: "foreign-passport-i94",
+      userSelectedTypeLabel: "Foreign Passport with Form I-94",
+      detectedDocumentType: "foreign-passport-i94",
+      detectedDocumentTypeLabel: "Foreign Passport with Form I-94",
+      extractedFields: { ...passAnalysis.extractedFields, nationality: "VENEZUELA", country_code: "VEN", expirationDate: "2019-06-01" },
+      validationResults: { ...passAnalysis.validationResults, expirationStatus: "NOT_APPLICABLE" },
+      flags: [{ code: "VENEZUELAN_PASSPORT_EXPIRY_BYPASS", severity: "INFO" as const, message: VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE }]
+    };
+    return { documentType: "foreign-passport-i94", documents: { front: makeFront(a, "success", VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE), back: { ...emptyIdSideState } } };
+  }
+  if (simId === "analyzing") {
+    return { documentType: "drivers-license", documents: { front: { imageBase64: MOCK_ID_IMAGE, fileName: "license_front.jpg", analysis: null, status: "analyzing", message: "" }, back: { ...emptyIdSideState } } };
+  }
+  return null;
+}
+
+function hasImageQualityIssue(analysis: IdentityVerificationAnalysis): boolean {
+  const flags = analysis.flags ?? [];
+  return (
+    !analysis.documentDetected ||
+    flags.some((flag) => ["IMAGE_QUALITY_LOW", "PHOTO_BLURRED", "NO_DOCUMENT_DETECTED"].includes(flag.code)) ||
+    ["BLURRED", "POOR", "FAILED"].includes(String(analysis.validationResults?.photoIntegrity ?? "").toUpperCase())
+  );
+}
+
+function DobCalendarPicker({
+  value,
+  onChange,
+  wrapperClassName = "",
+  triggerClassName = "",
+  calendarClassName = "",
+  triggerIconSize = 18,
+  scrollIntoViewOnOpen = false
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  wrapperClassName?: string;
+  triggerClassName?: string;
+  calendarClassName?: string;
+  triggerIconSize?: number;
+  scrollIntoViewOnOpen?: boolean;
+}) {
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+  const [isYearListOpen, setIsYearListOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const calendarRef = useRef<HTMLDivElement | null>(null);
+  const selectedDate = parseDateInputValue(value);
+  const [calendarYear, setCalendarYear] = useState(selectedDate.getFullYear());
+  const [calendarMonth, setCalendarMonth] = useState(selectedDate.getMonth());
+  const latestAllowedDob = getLatestAdultDob();
+  const hasDob = Boolean(value);
+  const selectedDay = selectedDate.getDate();
+
+  useEffect(() => {
+    if (!isCalendarOpen) return;
+    function handleOutsideClick(e: MouseEvent) {
+      if (
+        triggerRef.current && !triggerRef.current.contains(e.target as Node) &&
+        calendarRef.current && !calendarRef.current.contains(e.target as Node)
+      ) {
+        setIsCalendarOpen(false);
+        setIsYearListOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [isCalendarOpen]);
+
+  function toggleCalendar() {
+    const opening = !isCalendarOpen;
+    setIsCalendarOpen(opening);
+    if (!opening) {
+      setIsYearListOpen(false);
+      return;
+    }
+    if (scrollIntoViewOnOpen) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          calendarRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+        });
+      });
+    }
+  }
+
+  function selectDay(day: number) {
+    const nextDate = new Date(calendarYear, calendarMonth, day);
+    onChange(toDateInputValue(nextDate));
+    setIsCalendarOpen(false);
+    setIsYearListOpen(false);
+  }
+
+  return (
+    <div className={wrapperClassName}>
+      <button
+        ref={triggerRef}
+        className={["date-field custom-date-trigger", triggerClassName].filter(Boolean).join(" ")}
+        type="button"
+        aria-expanded={isCalendarOpen}
+        aria-label="Open date of birth calendar"
+        onClick={toggleCalendar}
+      >
+        <span aria-hidden="true" style={{ fontSize: triggerIconSize }}>📅</span>
+        <strong className={hasDob ? "has-value" : ""}>{hasDob ? formatDisplayDateLong(value) : "MM / DD / YYYY"}</strong>
+        <span className="calendar-glyph" aria-hidden="true">▾</span>
+      </button>
+      {isCalendarOpen && (
+        <div
+          ref={calendarRef}
+          className={["custom-calendar", calendarClassName].filter(Boolean).join(" ")}
+          role="dialog"
+          aria-label="Choose date of birth"
+        >
+          <div className="calendar-header">
+            <button aria-label="Previous month" type="button" onClick={() => {
+              const prev = new Date(calendarYear, calendarMonth - 1, 1);
+              setCalendarYear(prev.getFullYear());
+              setCalendarMonth(prev.getMonth());
+            }}>‹</button>
+            <strong>{MONTHS[calendarMonth]} {calendarYear}</strong>
+            <button aria-label="Next month" type="button" onClick={() => {
+              const next = new Date(calendarYear, calendarMonth + 1, 1);
+              setCalendarYear(next.getFullYear());
+              setCalendarMonth(next.getMonth());
+            }}>›</button>
+          </div>
+          <div className="calendar-selectors">
+            <select aria-label="Month" value={calendarMonth} onChange={(e) => setCalendarMonth(Number(e.target.value))}>
+              {MONTHS.map((m, i) => <option value={i} key={m}>{m}</option>)}
+            </select>
+            <div className="calendar-year-picker">
+              <button
+                type="button"
+                aria-expanded={isYearListOpen}
+                aria-label="Choose year"
+                onClick={() => setIsYearListOpen(o => !o)}
+              >
+                {calendarYear}
+                <span aria-hidden="true">▾</span>
+              </button>
+              {isYearListOpen && (
+                <div className="calendar-year-list" role="listbox" aria-label="Year options">
+                  {getDobYears().map((year) => (
+                    <button
+                      type="button"
+                      role="option"
+                      key={year}
+                      aria-selected={year === calendarYear}
+                      className={year === calendarYear ? "selected" : ""}
+                      onClick={() => { setCalendarYear(year); setIsYearListOpen(false); }}
+                    >
+                      {year}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="calendar-weekdays">
+            {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
+              <span key={`${day}-${index}`}>{day}</span>
+            ))}
+          </div>
+          <div className="calendar-days">
+            {Array.from({ length: getFirstWeekday(calendarYear, calendarMonth) }, (_, index) => (
+              <span className="calendar-empty" key={`empty-${index}`} />
+            ))}
+            {Array.from({ length: getDaysInMonth(calendarYear, calendarMonth) }, (_, index) => {
+              const day = index + 1;
+              const dayValue = toDateInputValue(new Date(calendarYear, calendarMonth, day));
+              const isSelected = calendarYear === selectedDate.getFullYear() && calendarMonth === selectedDate.getMonth() && day === selectedDay;
+              const isDisabled = dayValue > latestAllowedDob;
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  aria-label={`${getFullMonthName(calendarMonth)} ${day}, ${calendarYear}`}
+                  className={isSelected ? "selected" : ""}
+                  disabled={isDisabled}
+                  onClick={() => !isDisabled && selectDay(day)}
+                >
+                  {day}
+                  </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GovernmentIdUploadVerificationScreen({
   profile,
   onNext,
   onBack,
-  onEditProfile,
+  onSaveProfileCorrection,
   onAuditAttempt
 }: {
   profile: ConfirmedW2Profile;
   onNext: () => void;
   onBack: () => void;
-  onEditProfile: () => void;
+  onSaveProfileCorrection: (correction: IdentityProfileCorrection) => void;
   onAuditAttempt?: (event: Omit<AuditAttemptEvent, "recordKind" | "sessionId" | "timestamp" | "attemptNumber" | "profile">) => void;
 }) {
   const frontInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [documentType, setDocumentType] = useState<GovernmentIdType | "">("");
-  const [documents, setDocuments] = useState<Record<DocumentSide, IdUploadSideState>>({
-    front: { ...emptyIdSideState },
-    back: { ...emptyIdSideState }
-  });
+  const simId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("simid") : null;
+  const simState = buildSimIdState(simId);
+  const [documentType, setDocumentType] = useState<GovernmentIdType | "">(simState?.documentType ?? "");
+  const [documents, setDocuments] = useState<Record<DocumentSide, IdUploadSideState>>(
+    simState?.documents ?? { front: { ...emptyIdSideState }, back: { ...emptyIdSideState } }
+  );
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraSide, setCameraSide] = useState<DocumentSide>("front");
   // Extracted A-Number from front of Permanent Resident Card — passed to back-side verification
   const [extractedANumber, setExtractedANumber] = useState<string>("");
+  const [isProfileEditorOpen, setIsProfileEditorOpen] = useState(false);
+  const [profileEditorSaving, setProfileEditorSaving] = useState(false);
+  const profileEditorFirstInputRef = useRef<HTMLInputElement | null>(null);
+  const [profileDraft, setProfileDraft] = useState<IdentityProfileCorrection>({
+    legalFirstName: profile.legalFirstName,
+    legalMiddleName: profile.legalMiddleName ?? "",
+    legalLastName: profile.legalLastName,
+    suffix: profile.suffix ?? "",
+    dateOfBirth: profile.dateOfBirth
+  });
+  const [profileUpdateMessage, setProfileUpdateMessage] = useState("");
+  const [isHubOpen, setIsHubOpen] = useState(false);
+  const [analysisDisclosureOpen, setAnalysisDisclosureOpen] = useState(false);
 
   const frontReady = isIdSideReady(documents.front);
   const canContinue = Boolean(documentType && frontReady);
-  const blockingAnalysis = [documents.front.analysis].find((sideAnalysis) =>
-    sideAnalysis?.flags.some((flag) => flag.code === "NAME_MISMATCH" || flag.code === "DOB_MISMATCH")
-  );
+
+  const frontAnalysis = documents.front.analysis;
+  const hubItems = useMemo(() => {
+    if (!frontAnalysis || frontAnalysis.complianceEligibility) return [];
+    return deriveHubItems(frontAnalysis, {
+      onRetake: () => {
+        setIsHubOpen(false);
+        resetDocuments();
+        setTimeout(() => frontInputRef.current?.click(), 120);
+      },
+      onChangeSelection: () => {
+        setIsHubOpen(false);
+        resetDocuments();
+        setTimeout(() => {
+          const sel = document.querySelector<HTMLSelectElement>(".id-type-field select");
+          if (sel) { sel.scrollIntoView({ behavior: "smooth", block: "center" }); sel.focus(); }
+        }, 120);
+      },
+      onUseDetectedType: (type: GovernmentIdType) => {
+        const front = documents.front;
+        if (!front.imageBase64) {
+          setIsHubOpen(false);
+          resetDocuments();
+          setTimeout(() => frontInputRef.current?.click(), 120);
+          return;
+        }
+        setDocumentType(type);
+        setIsHubOpen(false);
+        void analyzeSide("front", front.imageBase64, front.fileName, type);
+      },
+      onFixProfile: () => {
+        setIsHubOpen(false);
+        openProfileEditor();
+      },
+    });
+  }, [frontAnalysis]);
+
 
   useEffect(() => {
     const video = videoRef.current;
@@ -990,6 +1784,46 @@ export function GovernmentIdUploadVerificationScreen({
     };
   }, [cameraStream]);
 
+  function openProfileEditor() {
+    setProfileDraft({
+      legalFirstName: profile.legalFirstName,
+      legalMiddleName: profile.legalMiddleName ?? "",
+      legalLastName: profile.legalLastName,
+      suffix: profile.suffix ?? "",
+      dateOfBirth: profile.dateOfBirth
+    });
+    setIsProfileEditorOpen(true);
+    setTimeout(() => profileEditorFirstInputRef.current?.focus(), 80);
+  }
+
+  function closeProfileEditor() {
+    if (profileEditorSaving) return;
+    setIsProfileEditorOpen(false);
+  }
+
+  function updateProfileDraft(field: keyof IdentityProfileCorrection, value: string) {
+    setProfileDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function confirmProfileCorrection() {
+    if (profileEditorSaving) return;
+    setProfileEditorSaving(true);
+    setTimeout(() => {
+      const correction = {
+        legalFirstName: profileDraft.legalFirstName.trim(),
+        legalMiddleName: (profileDraft.legalMiddleName ?? "").trim(),
+        legalLastName: profileDraft.legalLastName.trim(),
+        suffix: (profileDraft.suffix ?? "").trim(),
+        dateOfBirth: profileDraft.dateOfBirth
+      };
+      onSaveProfileCorrection(correction);
+      setProfileEditorSaving(false);
+      setIsProfileEditorOpen(false);
+      resetDocuments();
+      setProfileUpdateMessage("Profile updated. Please upload or retake the front image so we can verify it against the corrected details.");
+    }, 600);
+  }
+
   function resetDocuments() {
     setDocuments({
       front: { ...emptyIdSideState },
@@ -998,8 +1832,10 @@ export function GovernmentIdUploadVerificationScreen({
     setExtractedANumber("");
   }
 
-  async function analyzeSide(side: DocumentSide, imageBase64: string, fileName: string) {
-    if (!documentType) {
+  async function analyzeSide(side: DocumentSide, imageBase64: string, fileName: string, typeOverride?: GovernmentIdType) {
+    setProfileUpdateMessage("");
+    const effectiveType = typeOverride ?? documentType;
+    if (!effectiveType) {
       setDocuments((current) => ({
         ...current,
         [side]: {
@@ -1007,7 +1843,7 @@ export function GovernmentIdUploadVerificationScreen({
           imageBase64,
           fileName,
           status: "error",
-          message: "Choose the US government ID type before uploading."
+          message: "Choose the Government-issued ID type before uploading."
         }
       }));
       return;
@@ -1026,7 +1862,7 @@ export function GovernmentIdUploadVerificationScreen({
     }));
 
     try {
-      const isPRC = documentType === "permanent-resident-card";
+      const isPRC = effectiveType === "permanent-resident-card";
       const profilePayload = {
         ...profile,
         // For PRC back side, include A-Number extracted from front (if any) so n8n can cross-check
@@ -1039,7 +1875,7 @@ export function GovernmentIdUploadVerificationScreen({
         body: JSON.stringify({
           requestId: `identity_${side}_${Date.now()}`,
           imageBase64,
-          selectedDocumentType: documentType,
+          selectedDocumentType: effectiveType,
           documentSide: side,
           documentDetectedInFrame: true,
           profile: profilePayload
@@ -1063,14 +1899,22 @@ export function GovernmentIdUploadVerificationScreen({
       onAuditAttempt?.({
         flow: "identity",
         side,
-        selectedDocumentType: documentType,
+        selectedDocumentType: effectiveType,
         fileName,
         resultStatus,
         userMessage: result.userMessage,
-        googleDriveFileId: result.googleDriveFileId,
-        googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId),
+        s3FileKey: result.s3FileKey,
+        s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey),
         flags: result.analysis.flags
       });
+      const normalizedMessage = result.analysis.complianceEligibility
+        ? DOCUMENT_VALIDATED_SUCCESS
+        : hasImageQualityIssue(result.analysis)
+          ? IMAGE_QUALITY_GUIDANCE
+          : hasDocumentTypeMismatch(result.analysis)
+            ? selectedDocumentTypeMismatchMessage(result.analysis)
+            : result.userMessage;
+
       setDocuments((current) => ({
         ...current,
         [side]: {
@@ -1078,9 +1922,9 @@ export function GovernmentIdUploadVerificationScreen({
           fileName,
           analysis: result.analysis,
           status: result.analysis.complianceEligibility ? "success" : "error",
-          message: result.userMessage,
-          googleDriveFileId: result.googleDriveFileId,
-          googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId)
+          message: normalizedMessage,
+          s3FileKey: result.s3FileKey,
+          s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey)
         }
       }));
     } catch (error) {
@@ -1088,7 +1932,7 @@ export function GovernmentIdUploadVerificationScreen({
       onAuditAttempt?.({
         flow: "identity",
         side,
-        selectedDocumentType: documentType,
+        selectedDocumentType: effectiveType,
         fileName,
         resultStatus: "fail",
         userMessage: message
@@ -1208,13 +2052,13 @@ export function GovernmentIdUploadVerificationScreen({
             if (hasImage) setDocuments(cur => ({ ...cur, [side]: { ...emptyIdSideState } }));
             inputRef.current?.click();
           }}>
-            {hasImage ? (hasError ? "Try different image" : "Replace image") : "Upload image"}
+            {hasImage ? (hasError ? "Upload image" : "Replace image") : "Upload image"}
           </button>
           <button disabled={isAnalyzing} onClick={() => {
             if (hasImage) setDocuments(cur => ({ ...cur, [side]: { ...emptyIdSideState } }));
             void openCamera(side);
           }}>
-            {hasImage && hasError ? "Retake photo" : "Use camera"}
+            {"Use camera"}
           </button>
         </div>
         {state.message && state.status !== "analyzing" && (
@@ -1222,22 +2066,28 @@ export function GovernmentIdUploadVerificationScreen({
             {state.message}
           </div>
         )}
-        {state.status !== "analyzing" && state.analysis && <AnalysisPanelBoundary><IdentityAnalysisPanel analysis={state.analysis} /></AnalysisPanelBoundary>}
+        {state.status !== "analyzing" && state.analysis && (
+          <details className="analysis-disclosure" open={analysisDisclosureOpen} onToggle={e => setAnalysisDisclosureOpen((e.target as HTMLDetailsElement).open)}>
+            <summary>View technical details</summary>
+            <AnalysisPanelBoundary><IdentityAnalysisPanel analysis={state.analysis} /></AnalysisPanelBoundary>
+          </details>
+        )}
       </section>
     );
   }
 
   return (
     <section className="government-id-screen">
+
       <header className="identity-consent-header">
         <button className="identity-close" onClick={onBack} aria-label="Back">×</button>
-        <strong>Identity verification</strong>
+        <strong>Document validation</strong>
       </header>
       <div className="government-id-content">
-        <h1>Government ID</h1>
-        <p>Upload a clear image of the front of your selected US government ID. We’ll read the document and compare the extracted details to your profile.</p>
+        <h1>Government-Issued ID</h1>
+        <p>Take a clear image of the front of your selected government-issued ID.</p>
         <label className="id-type-field">
-          US government ID type
+          Government-issued ID type
           <select
             value={documentType}
             onChange={(event) => {
@@ -1261,16 +2111,118 @@ export function GovernmentIdUploadVerificationScreen({
           </div>
         )}
         {renderUploadSide("front", "Front side image", frontInputRef)}
-        {blockingAnalysis && (
-          <div className="id-feedback error" role="alert">
-            The document details do not match your profile. Go back to update your legal name or date of birth, then upload the front image again.
-            <button className="id-inline-action" onClick={onEditProfile}>Go back to edit profile</button>
+        {profileUpdateMessage && (
+          <div className="id-feedback success" role="status">
+            {profileUpdateMessage}
           </div>
         )}
-        {!canContinue && !blockingAnalysis && documents.front.status !== "analyzing" && (
+        {hubItems.length > 0 && !isHubOpen && (
+          <button className="hub-reopen-trigger" onClick={() => setIsHubOpen(true)}>
+            Review and fix {hubItems.filter(i => i.status === "failed").length} issue{hubItems.filter(i => i.status === "failed").length !== 1 ? "s" : ""}
+          </button>
+        )}
+        {!canContinue && hubItems.length === 0 && documents.front.status !== "analyzing" && (
           <div className="id-feedback" role="status">Upload and verify the front image to continue.</div>
         )}
       </div>
+      {isHubOpen && hubItems.length > 0 && (
+        <ResolutionHub
+          items={hubItems}
+          onClose={() => setIsHubOpen(false)}
+          onContinue={onNext}
+        />
+      )}
+      {isProfileEditorOpen && (
+        <div
+          className="id-profile-editor-backdrop"
+          role="presentation"
+          onKeyDown={(e) => e.key === "Escape" && closeProfileEditor()}
+          onClick={(e) => e.target === e.currentTarget && closeProfileEditor()}
+        >
+          <section className="id-profile-editor-card" role="dialog" aria-modal="true" aria-labelledby="id-profile-editor-title">
+            <div className="id-profile-editor-grab-handle" aria-hidden="true" />
+            <button
+              className="id-profile-editor-close"
+              type="button"
+              onClick={closeProfileEditor}
+              aria-label="Close profile editor"
+            >×</button>
+
+            <div className="id-profile-editor-content">
+              <div className="id-profile-editor-security-badge" aria-label="Secure form">
+                <span aria-hidden="true">🔒</span> Your details are stored securely and never shared.
+              </div>
+
+              <div className="id-profile-editor-avatar" aria-hidden="true">
+                {profile.legalFirstName.charAt(0) || "P"}{profile.legalLastName.charAt(0) || ""}
+              </div>
+
+              <h2 id="id-profile-editor-title">Confirm your legal name and date of birth</h2>
+              <p>Enter the same legal details shown on your government ID.</p>
+
+              <div className="id-profile-editor-grid">
+                <label className="id-profile-editor-name-field">
+                  Legal first name <span className="id-profile-editor-required" aria-hidden="true">*</span>
+                  <input
+                    ref={profileEditorFirstInputRef}
+                    value={profileDraft.legalFirstName}
+                    onChange={(e) => updateProfileDraft("legalFirstName", e.target.value)}
+                    autoComplete="given-name"
+                  />
+                </label>
+                <label className="id-profile-editor-name-field">
+                  Legal last name <span className="id-profile-editor-required" aria-hidden="true">*</span>
+                  <input
+                    value={profileDraft.legalLastName}
+                    onChange={(e) => updateProfileDraft("legalLastName", e.target.value)}
+                    autoComplete="family-name"
+                  />
+                </label>
+                <label className="id-profile-editor-secondary-field">
+                  Middle name <span className="id-profile-editor-optional">optional</span>
+                  <input
+                    value={profileDraft.legalMiddleName ?? ""}
+                    onChange={(e) => updateProfileDraft("legalMiddleName", e.target.value)}
+                    autoComplete="additional-name"
+                  />
+                </label>
+                <label className="id-profile-editor-secondary-field">
+                  Suffix <span className="id-profile-editor-optional">optional</span>
+                  <input
+                    value={profileDraft.suffix ?? ""}
+                    onChange={(e) => updateProfileDraft("suffix", e.target.value)}
+                    placeholder="Jr, Sr, III"
+                  />
+                </label>
+                <div className="id-profile-editor-dob-wrap">
+                  <span className="id-profile-editor-dob-label">
+                    Date of birth <span className="id-profile-editor-required" aria-hidden="true">*</span>
+                  </span>
+                  <ProfileDobPicker
+                    value={profileDraft.dateOfBirth}
+                    onChange={(v) => updateProfileDraft("dateOfBirth", v)}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="id-profile-editor-actions">
+              <button type="button" onClick={closeProfileEditor} disabled={profileEditorSaving}>Cancel</button>
+              <button
+                type="button"
+                className="blue-cta id-profile-editor-save-btn"
+                onClick={confirmProfileCorrection}
+                disabled={profileEditorSaving || !profileDraft.legalFirstName.trim() || !profileDraft.legalLastName.trim() || !profileDraft.dateOfBirth}
+                aria-busy={profileEditorSaving}
+              >
+                {profileEditorSaving
+                  ? <><span className="id-profile-editor-spinner" aria-hidden="true" /> Saving…</>
+                  : "Save"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       <div className="government-id-footer">
         <button className="blue-cta" onClick={onNext} disabled={!canContinue}>Continue</button>
       </div>
@@ -1294,23 +2246,24 @@ function readImageFile(file: File): Promise<string> {
 
 function W2DocumentationIntroScreen({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const steps = [
-    "Complete identity verification",
+    "Complete document validation",
     "Confirm your profile information",
     "Submit required forms and complete document verification"
   ];
 
   return (
     <section className="w2-doc-intro-screen">
+
       <div className="w2-doc-intro-content">
         <BackButton onClick={onBack} />
         <div className="money-badge" aria-hidden="true">💵</div>
         <h1>Complete W-2 documentation to expand your shift access</h1>
         <p className="w2-employer">Become an employee of Advantage Workforce Services (&quot;AWS&quot;).</p>
+        <h2 className="w2-benefits-header">Benefits</h2>
         <ul className="w2-benefits">
           <li>More shifts from our biggest partners</li>
           <li>Automatic tax withholding on paychecks</li>
         </ul>
-        <p className="w2-faq">Questions? <a href="#faq">Browse our FAQ</a></p>
         <h2>Steps for W-2</h2>
         <ol className="w2-steps">
           {steps.map((step, index) => (
@@ -1341,6 +2294,7 @@ function ContractorAgreementScreen({ onNext, onBack }: { onNext: () => void; onB
 
   return (
     <section className="contractor-agreement-screen">
+
       <BackButton onClick={onBack} />
       <div className="contractor-agreement-copy" aria-label="Contractor agreement text" onScroll={handleScroll}>
         <h1>Contractor Services Agreement</h1>
@@ -1428,16 +2382,10 @@ function ContractorAgreementScreen({ onNext, onBack }: { onNext: () => void; onB
 function W2OnboardingPromptScreen({ onNext }: { onNext: () => void }) {
   return (
     <section className="w2-start-screen" aria-label="W-2 onboarding start">
+
       <div className="w2-start-content no-scroll">
         <h1>W-2 onboarding</h1>
-        <div className="w2-signup-card">
-          <p className="w2-shift-eyebrow">100+ shifts near you</p>
-          <h2>Sign up for W-2 onboarding</h2>
-          <p>
-            There are over <strong>100+ W-2 shifts</strong> in your area. Complete your paperwork to unlock more
-            opportunities.
-          </p>
-        </div>
+        <p>Unlock more shifts by completing your W-2 onboarding.</p>
         <button className="w2-start-button" onClick={onNext}>Start onboarding</button>
       </div>
       <InstaworkBottomNav />
@@ -1451,7 +2399,7 @@ function InstaworkBottomNav() {
       <span className="active" aria-current="page">
         <span className="tab-icon" aria-hidden="true">◉</span>
         Profile
-      </span>
+        </span>
     </nav>
   );
 }
@@ -1464,9 +2412,11 @@ function BackButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+
 function I9SimulationIntroScreen({ onNext }: { onNext: () => void }) {
   return (
     <section className="i9-simulation-screen">
+
       <div className="i9-simulation-content">
         <div className="i9-document-icon" aria-hidden="true">
           <span />
@@ -1474,7 +2424,7 @@ function I9SimulationIntroScreen({ onNext }: { onNext: () => void }) {
         </div>
         <h1>I-9 form simulation</h1>
         <p>
-          Next, you’ll continue into a simulated I-9 form flow using the profile details you just confirmed.
+          Next, you'll continue into a simulated Form I-9 flow. This process is for educational purposes only.
         </p>
       </div>
       <div className="i9-simulation-footer">
@@ -1839,41 +2789,11 @@ function DobScreen({
   onBack: () => void;
   selfieImage: string | null;
 }) {
-  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [isYearListOpen, setIsYearListOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const calendarRef = useRef<HTMLDivElement | null>(null);
-  const selectedDate = parseDateInputValue(dateOfBirth);
-  const [calendarYear, setCalendarYear] = useState(selectedDate.getFullYear());
-  const [calendarMonth, setCalendarMonth] = useState(selectedDate.getMonth());
-  const latestAllowedDob = getLatestAdultDob();
   const hasDob = Boolean(dateOfBirth);
   const isAdult = isAtLeast18(dateOfBirth);
   const hasName = Boolean(firstName.trim() && lastName.trim());
   const hasValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   const hasValidPhone = isValidUsPhone(phone);
-  const selectedDay = selectedDate.getDate();
-
-  function toggleCalendar() {
-    const opening = !isCalendarOpen;
-    setIsCalendarOpen(opening);
-    if (!opening) setIsYearListOpen(false);
-    if (opening) {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          calendarRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        });
-      });
-    }
-  }
-
-  function selectDay(day: number) {
-    const nextDate = new Date(calendarYear, calendarMonth, day);
-    const nextValue = toDateInputValue(nextDate);
-    onChange(nextValue);
-    setIsCalendarOpen(false);
-    setIsYearListOpen(false);
-  }
 
   return (
     <section className="native-screen dob-screen">
@@ -1893,98 +2813,7 @@ function DobScreen({
           </label>
         </div>
         <p className="dob-field-label">Date of birth</p>
-          <button
-          ref={triggerRef}
-            className="date-field custom-date-trigger"
-            type="button"
-            aria-expanded={isCalendarOpen}
-            aria-label="Open date of birth calendar"
-          onClick={toggleCalendar}
-          >
-          <span aria-hidden="true" style={{ fontSize: 18 }}>📅</span>
-          <strong className={hasDob ? "has-value" : ""}>{hasDob ? formatDisplayDate(dateOfBirth) : "MM / DD / YYYY"}</strong>
-            <span className="calendar-glyph" aria-hidden="true">▾</span>
-          </button>
-          {isCalendarOpen && (
-          <div ref={calendarRef} className="custom-calendar" role="dialog" aria-label="Choose date of birth">
-              <div className="calendar-header">
-                <button aria-label="Previous month" onClick={() => {
-                  const next = new Date(calendarYear, calendarMonth - 1, 1);
-                  setCalendarYear(next.getFullYear());
-                  setCalendarMonth(next.getMonth());
-                }}>‹</button>
-                <strong>{MONTHS[calendarMonth]} {calendarYear}</strong>
-                <button aria-label="Next month" onClick={() => {
-                  const next = new Date(calendarYear, calendarMonth + 1, 1);
-                  setCalendarYear(next.getFullYear());
-                  setCalendarMonth(next.getMonth());
-                }}>›</button>
-              </div>
-              <div className="calendar-selectors">
-                <select aria-label="Month" value={calendarMonth} onChange={(event) => setCalendarMonth(Number(event.target.value))}>
-                  {MONTHS.map((month, index) => (
-                    <option value={index} key={month}>{month}</option>
-                  ))}
-                </select>
-              <div className="calendar-year-picker">
-                <button
-                  type="button"
-                  aria-expanded={isYearListOpen}
-                  aria-label="Choose year"
-                  onClick={() => setIsYearListOpen((open) => !open)}
-                >
-                  {calendarYear}
-                  <span aria-hidden="true">▾</span>
-                </button>
-                {isYearListOpen && (
-                  <div className="calendar-year-list" role="listbox" aria-label="Year options">
-                  {getDobYears().map((year) => (
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={year === calendarYear}
-                        className={year === calendarYear ? "selected" : ""}
-                        value={year}
-                        key={year}
-                        onClick={() => {
-                          setCalendarYear(year);
-                          setIsYearListOpen(false);
-                        }}
-                      >
-                        {year}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              </div>
-              <div className="calendar-weekdays">
-                {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}
-              </div>
-              <div className="calendar-days">
-                {Array.from({ length: getFirstWeekday(calendarYear, calendarMonth) }, (_, index) => (
-                  <span className="calendar-empty" key={`empty-${index}`} />
-                ))}
-                {Array.from({ length: getDaysInMonth(calendarYear, calendarMonth) }, (_, index) => {
-                  const day = index + 1;
-                  const value = toDateInputValue(new Date(calendarYear, calendarMonth, day));
-                  const isSelected = calendarYear === selectedDate.getFullYear() && calendarMonth === selectedDate.getMonth() && day === selectedDay;
-                  const isDisabled = value > latestAllowedDob;
-                  return (
-                    <button
-                      className={isSelected ? "selected" : ""}
-                      aria-label={`${getFullMonthName(calendarMonth)} ${day}, ${calendarYear}`}
-                      disabled={isDisabled}
-                      key={day}
-                      onClick={() => selectDay(day)}
-                    >
-                      {day}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+        <DobCalendarPicker value={dateOfBirth} onChange={onChange} scrollIntoViewOnOpen />
         <label className="email-field">
           Email address
           <input
@@ -2004,7 +2833,7 @@ function DobScreen({
             autoComplete="tel"
             placeholder="(323) 555-7890"
             value={phone}
-            onChange={(event) => onPhoneChange(event.target.value)}
+            onChange={(event) => onPhoneChange(event.target.value.replace(/[a-zA-Z]/g, ""))}
           />
         </label>
         {!hasName && <p className="field-error">Enter your legal first and last name to continue.</p>}
@@ -2043,6 +2872,7 @@ function formatLongDate(value: string) {
 }
 
 function isValidUsPhone(value: string) {
+  if (/[a-zA-Z]/.test(value)) return false;
   const digits = value.replace(/\D/g, "");
   return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
 }
@@ -2547,6 +3377,7 @@ function W2ProfileScreen({
 
   return (
       <section className="w2-profile-edit-screen">
+  
         <button className="identity-close w2-profile-close" onClick={() => setEditingField(null)} aria-label="Back">×</button>
         <div className="w2-profile-edit-content">
           <h1>{titleByField[editingField]}</h1>
@@ -2582,7 +3413,7 @@ function W2ProfileScreen({
             <div className="w2-edit-fields">
               <label>
                 Phone number
-                <input type="tel" inputMode="tel" value={profile.phone} onChange={(event) => onChange("phone", event.target.value)} placeholder="(323) 555-7890" />
+                <input type="tel" inputMode="tel" value={profile.phone} onChange={(event) => onChange("phone", event.target.value.replace(/[a-zA-Z]/g, ""))} placeholder="(323) 555-7890" />
               </label>
         </div>
       )}
@@ -2614,10 +3445,10 @@ function W2ProfileScreen({
 
   return (
     <section className="w2-profile-review-screen">
-      <button className="identity-close w2-profile-close" onClick={onBack} aria-label="Back">×</button>
+
+      <button className="identity-close w2-profile-close" onClick={onBack} aria-label="Back">&#x2715;</button>
       <div className="w2-profile-review-content">
         <h1>Review your profile details</h1>
-        <p>This information may be passed to local, state, and federal governments to complete the W-2 process.</p>
         <W2ReviewRow
           label="Name"
           value={fullName || initialName}
@@ -2642,6 +3473,13 @@ function W2ProfileScreen({
             setEditingField("ssn");
           }}
         />
+        <aside className="w2-address-reminder" role="note" aria-label="Address matching reminder">
+          <strong>Address consistency</strong>
+          <p>
+            Please enter your current residential address. It does not need to match the address on
+            your government-issued ID. Ensure the address you provide on Form I-9 and Form W-4 is identical.
+          </p>
+        </aside>
       </div>
       {validation?.status === "pass" && <p className="success">W-2 validation passed. Review before you continue to WorkBright.</p>}
       {validation?.status === "blocked" && (
@@ -2687,7 +3525,8 @@ function WorkBright({
   onBack,
   onSubmit,
   onAuditAttempt,
-  onFeedbackSubmit
+  onFeedbackSubmit,
+  onAppRedirect
 }: {
   profile: ConfirmedW2Profile;
   currentStep: number;
@@ -2698,11 +3537,70 @@ function WorkBright({
   onSubmit: () => void;
   onAuditAttempt: (event: Omit<AuditAttemptEvent, "recordKind" | "sessionId" | "timestamp" | "attemptNumber" | "profile">) => void;
   onFeedbackSubmit: (i9: I9State, rating: number, comments: string) => void;
+  onAppRedirect: (context: "pre_submit" | "post_submit") => void;
 }) {
   const name = `${profile.legalFirstName} ${profile.legalLastName}`.trim();
   const ssnDigits = normalizeSsn(profile.ssn);
   const ssnLast4 = ssnDigits.slice(-4);
-  const [i9, setI9] = useState<I9State>(DEFAULT_I9_STATE);
+
+  const simCitizenship = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("citizenship") as CitizenshipStatus | null : null;
+  const simDocPath = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("docpath") as DocumentPath | null : null;
+  const simDocA = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("doca") : null;
+  const simI9 = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("simi9") : null;
+
+  const buildI9DocImages = (scenario: string | null): Record<string, DocImageState> => {
+    if (!scenario) return {};
+    const docId = simDocA || "us_passport";
+    const passportAnalysis: IdentityVerificationAnalysis = {
+      userSelectedType: "passport",
+      userSelectedTypeLabel: "U.S. Passport",
+      detectedDocumentType: "passport",
+      detectedDocumentTypeLabel: "U.S. Passport",
+      documentTypeMatch: true,
+      documentDetected: true,
+      detectedSide: "front",
+      extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", expirationDate: "2028-04-15", passportNumber: "A12345678" },
+      validationResults: { nameMatch: { status: "MATCH" }, dobMatch: { status: "MATCH" }, addressMatch: { status: "NOT_CHECKED" }, expirationStatus: "VALID", photoIntegrity: "CLEAR" },
+      flags: [], complianceEligibility: true, nextAction: "CONTINUE", humanReviewRequired: false
+    };
+    if (scenario === "pass") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "passport.jpg", analysis: passportAnalysis, status: "success", message: "Document verified successfully." } };
+    }
+    if (scenario === "wrong_doc") {
+      const analysis: IdentityVerificationAnalysis = { ...passportAnalysis, complianceEligibility: false, nextAction: "RETAKE_PHOTO", documentTypeMatch: false, detectedDocumentType: "drivers-license", detectedDocumentTypeLabel: "Driver's License", flags: [{ code: "DOCUMENT_TYPE_MISMATCH", severity: "CRITICAL" as const, message: selectedDocumentTypeMismatchMessage(passportAnalysis) }] };
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "random_card.jpg", analysis, status: "error", message: selectedDocumentTypeMismatchMessage(analysis) } };
+    }
+    if (scenario === "quality_fail") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "blurry.jpg", analysis: { ...passportAnalysis, complianceEligibility: false, nextAction: "RETAKE_PHOTO", documentDetected: false, extractedFields: {}, validationResults: { nameMatch: { status: "NOT_CHECKED" }, dobMatch: { status: "NOT_CHECKED" }, addressMatch: { status: "NOT_CHECKED" }, expirationStatus: "UNKNOWN", photoIntegrity: "BLURRED" }, flags: [{ code: "IMAGE_QUALITY_LOW", severity: "CRITICAL" as const, message: "Image too blurry to process." }] }, status: "error", message: "Image is unclear. Please retake in good lighting." } };
+    }
+    if (scenario === "expired") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "passport.jpg", analysis: { ...passportAnalysis, complianceEligibility: false, nextAction: "HALT_VERIFICATION", extractedFields: { ...passportAnalysis.extractedFields, expirationDate: "2019-03-10" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "EXPIRED" }, flags: [{ code: "DOCUMENT_EXPIRED", severity: "CRITICAL" as const, message: "Passport expired Mar 10, 2019." }] }, status: "error", message: "Document is expired. Please provide a valid passport." } };
+    }
+    if (scenario === "venezuelan_pass") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "ven_passport.jpg", analysis: { ...passportAnalysis, detectedDocumentType: "foreign-passport-i94", detectedDocumentTypeLabel: "Foreign Passport with Form I-94", extractedFields: { ...passportAnalysis.extractedFields, nationality: "VENEZUELA", country_code: "VEN", expirationDate: "2019-06-01" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "NOT_APPLICABLE" as const }, flags: [{ code: "VENEZUELAN_PASSPORT_EXPIRY_BYPASS", severity: "INFO" as const, message: VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE }] }, status: "success", message: VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE } };
+    }
+    if (scenario === "ead_auto_extend") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "ead_i797c.jpg", analysis: { ...passportAnalysis, userSelectedType: "employment-authorization-card", userSelectedTypeLabel: "Employment Authorization Document (EAD)", detectedDocumentType: "employment-authorization-card", detectedDocumentTypeLabel: "Employment Authorization Document (Form I-766)", extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", expirationDate: "2024-08-15", category: "C09", i797c_receipt_number: "IOE1234567890", auto_extension_date: "2026-08-15" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "VALID" }, flags: [{ code: "EAD_AUTO_EXTENSION", severity: "INFO" as const, message: I9_EXPIRY_EXCEPTION_MESSAGES.EAD_AUTO_EXTENSION }] }, status: "success", message: I9_EXPIRY_EXCEPTION_MESSAGES.EAD_AUTO_EXTENSION } };
+    }
+    if (scenario === "green_card_i797") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "green_card_i797.jpg", analysis: { ...passportAnalysis, userSelectedType: "permanent-resident-card", userSelectedTypeLabel: "Permanent Resident Card (I-551)", detectedDocumentType: "permanent-resident-card", detectedDocumentTypeLabel: "Expired Permanent Resident Card with Form I-797 Extension Notice", extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", expirationDate: "2023-11-01", a_number: "A123456789", i797_notice_date: "2024-02-15", i797_extension_date: "2026-11-01" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "NOT_APPLICABLE" as const }, flags: [{ code: "I551_EXTENSION_NOTICE", severity: "INFO" as const, message: I9_EXPIRY_EXCEPTION_MESSAGES.I551_EXTENSION_NOTICE }] }, status: "success", message: I9_EXPIRY_EXCEPTION_MESSAGES.I551_EXTENSION_NOTICE } };
+    }
+    if (scenario === "adit_stamp") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "foreign_passport_adit.jpg", analysis: { ...passportAnalysis, detectedDocumentType: "passport", detectedDocumentTypeLabel: "Foreign Passport with Temporary I-551 Stamp (ADIT)", extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", expirationDate: "2021-03-20", nationality: "COLOMBIA", i551_stamp_date: "2024-06-15" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "NOT_APPLICABLE" as const }, flags: [{ code: "ADIT_STAMP_ACCEPTED", severity: "INFO" as const, message: I9_EXPIRY_EXCEPTION_MESSAGES.ADIT_STAMP_ACCEPTED }] }, status: "success", message: I9_EXPIRY_EXCEPTION_MESSAGES.ADIT_STAMP_ACCEPTED } };
+    }
+    if (scenario === "receipt") {
+      return { [docId]: { imageBase64: MOCK_ID_IMAGE, fileName: "receipt_document.jpg", analysis: { ...passportAnalysis, detectedDocumentType: "passport", detectedDocumentTypeLabel: "Receipt for Lost/Stolen/Damaged Document", extractedFields: { firstName: "Jordan", lastName: "Smith", dateOfBirth: "1992-04-15", receipt_date: "2026-05-01", original_document: "US Passport" }, validationResults: { ...passportAnalysis.validationResults, expirationStatus: "NOT_APPLICABLE" as const }, flags: [{ code: "RECEIPT_DOCUMENT_ACCEPTED", severity: "INFO" as const, message: I9_EXPIRY_EXCEPTION_MESSAGES.RECEIPT_DOCUMENT_ACCEPTED }] }, status: "success", message: I9_EXPIRY_EXCEPTION_MESSAGES.RECEIPT_DOCUMENT_ACCEPTED } };
+    }
+    return {};
+  };
+
+  const [i9, setI9] = useState<I9State>(() => ({
+    ...DEFAULT_I9_STATE,
+    ...(simCitizenship ? { citizenshipStatus: simCitizenship } : {}),
+    ...(simDocPath ? { documentPath: simDocPath } : {}),
+    ...(simDocA ? { selectedListA: simDocA } : {}),
+    docImages: buildI9DocImages(simI9)
+  }));
   const [emailExcluded, setEmailExcluded] = useState(false);
   const [phoneExcluded, setPhoneExcluded] = useState(false);
 
@@ -2725,11 +3623,16 @@ function WorkBright({
   function wbShell(title: string | null, children: ReactNode, footer: ReactNode) {
   return (
       <section className="workbright-browser-screen">
+  
         <div className="workbright-browser-bar">
           <button className="wb-bar-close">Close</button>
           <span className="wb-bar-lock" aria-hidden="true">&#x1F512;</span>
           <strong>instaworktest.workbright.com</strong>
           <span className="wb-bar-refresh" aria-hidden="true">&#x21BB;</span>
+        </div>
+        <div className="wb-sim-banner" role="note" aria-label="Simulation notice">
+          <span className="wb-sim-dot" aria-hidden="true" />
+          Simulation ONLY — Review your I-9 details before official document upload
         </div>
         <div className="workbright-form-content">
           {title && <h1>{title}</h1>}
@@ -2760,12 +3663,11 @@ function WorkBright({
         </div>
         <h2>Personal Information</h2>
         <p className="i9-copy">
-          The following profile information will be entered into your Form I-9 as you have indicated.
-          If any of this information is incorrect, please contact your employer to update it.
+          Review the profile information below. These details will be used to complete your Form I-9.
         </p>
         <div className="i9-info-list">
           <I9InfoItem label="Name:" value={name || "None"} />
-          <I9InfoItem label="Birthdate:" value={profile.dateOfBirth ? formatDisplayDate(profile.dateOfBirth) : "None"} />
+          <I9InfoItem label="Birthdate:" value={profile.dateOfBirth ? formatDisplayDateLong(profile.dateOfBirth) : "None"} />
           <I9InfoItem label="SSN:" value={ssnLast4 ? `XXX-XX-${ssnLast4}` : "None"} />
           <I9InfoItem
             label="Email (optional):"
@@ -2812,17 +3714,11 @@ function WorkBright({
 
     return wbShell(null, (
       <>
-        <div className="i9-attestation-banner">
-          I am aware that federal law provides for imprisonment and/or fines for false statements, or the use
-          of false documents, in connection with the completion of this form. I attest, under penalty of perjury,
-          that this information, including my selection of the box attesting to my citizenship or immigration
-          status, is true and correct.
-        </div>
-
         <p className="i9-field-label"><span className="i9-required">*</span> Choose one of the following options to attest to your citizenship or immigration status:</p>
+        <p className="i9-scroll-hint">Scroll down to see all 4 options</p>
         <div className="i9-attestation-list">
-          {CITIZENSHIP_OPTIONS.map(opt => (
-            <label key={opt.value} className="i9-radio-row">
+          {CITIZENSHIP_OPTIONS.map((opt, idx) => (
+            <label key={opt.value} className={`i9-radio-card${i9.citizenshipStatus === opt.value ? " selected" : ""}`}>
               <input
                 type="radio"
                 name="citizenshipStatus"
@@ -2832,7 +3728,10 @@ function WorkBright({
                   updateI9("authorizedNumberType", null);
                 }}
               />
-              <span>{opt.label}</span>
+              <span className="i9-radio-card-body">
+                <strong>{idx + 1}. {opt.label}</strong>
+                <small className="i9-status-description">{opt.description}</small>
+              </span>
             </label>
           ))}
         </div>
@@ -2859,6 +3758,7 @@ function WorkBright({
               <span className="i9-date-icon" aria-hidden="true">&#x1F4C5;</span>
               <input
                 type="date"
+                aria-label="Date your authorization to work expires"
                 className="i9-text-input"
                 value={i9.workAuthExpiration}
                 onChange={e => updateI9("workAuthExpiration", e.target.value)}
@@ -2871,17 +3771,26 @@ function WorkBright({
             </p>
 
             <p className="i9-helper-text" style={{ marginTop: 20 }}>
-              <span className="i9-required">*</span> Noncitizens authorized to work must enter <strong>one</strong> of
+              <span className="i9-required">*</span> Enter <strong>one</strong> of
               the following to complete Section 1: USCIS Number/A-Number (7 to 9 digits); Form I-94
               Admission Number (11 digits); or Foreign Passport Number and the Country of
               Issuance. Your employer may not ask for documentation to verify the information
               you entered in Section 1.
             </p>
 
+            <div className="i9-ead-caution">
+              <span className="i9-ead-caution-icon" aria-hidden="true">⚠️</span>
+              <p>
+                <strong>Have an expired EAD?</strong> Certain EAD categories may be automatically
+                extended by USCIS beyond the card's printed expiration date. Review the latest
+                USCIS guidance for more information, then enter the expiration date accordingly.
+              </p>
+            </div>
+
             <div className="i9-option-list">
               <div className="i9-option-block">
                 <p className="i9-option-heading">Option 1</p>
-                <p className="i9-field-label"><span className="i9-required">*</span> A-Number/USCIS Number</p>
+                <p className="i9-field-label">A-Number/USCIS Number</p>
                 <input
                   type="text"
                   className="i9-text-input"
@@ -2893,9 +3802,10 @@ function WorkBright({
                   maxLength={11}
                 />
               </div>
+              <div className="i9-option-divider" aria-hidden="true"><span>or</span></div>
               <div className="i9-option-block">
                 <p className="i9-option-heading">Option 2</p>
-                <p className="i9-field-label"><span className="i9-required">*</span> Form I-94 Admission Number</p>
+                <p className="i9-field-label">Form I-94 Admission Number</p>
                 <input
                   type="text"
                   className="i9-text-input"
@@ -2906,9 +3816,10 @@ function WorkBright({
                   maxLength={14}
                 />
               </div>
+              <div className="i9-option-divider" aria-hidden="true"><span>or</span></div>
               <div className="i9-option-block">
                 <p className="i9-option-heading">Option 3</p>
-                <p className="i9-field-label"><span className="i9-required">*</span> Foreign Passport Number</p>
+                <p className="i9-field-label">Foreign Passport Number</p>
                 <input
                   type="text"
                   className="i9-text-input"
@@ -2971,17 +3882,19 @@ function WorkBright({
 
     return wbShell("Choose Your Documentation", (
       <>
+        <h2>How to choose documents for Section 2</h2>
         <p className="i9-copy">
-          You will need to provide documentation that verifies your identity and employment eligibility
-          to work in the United States. Your employer or an authorized representative will inspect your
-          documentation in person in Section 2 and certify that it proves your identity and that you
-          have the legal right to work in the United States.
+          The documents you choose are up to you. This guide is intended to help you understand
+          the instructions on Form I-9. You can provide one document from <strong>List A</strong> OR
+          a combination of one document from <strong>List B</strong> and one document from <strong>List C</strong>.
+          Depending on what document(s) you wish to provide, select the corresponding tab below
+          for "List A" or "Lists B &amp; C" and indicate what document(s) you have selected.
         </p>
         <p className="i9-copy">
-          You can provide one document from <strong>List A</strong> OR a combination of one document
-          from <strong>List B</strong> and one document from <strong>List C</strong>. Depending on what
-          document(s) you wish to provide, you can select the corresponding tab below for "List A"
-          or "Lists B &amp; C" and indicate what document(s) you have selected.
+          You will need to provide documentation that verifies your identity and employment eligibility
+          to work in the United States. You will select an authorized representative to inspect
+          the original documents in Section 2. The person you select will need to have a smartphone
+          and be physically close to you to inspect the documents.
         </p>
         <p className="i9-copy i9-copy-light">What if I have a receipt for a document that is in process?</p>
 
@@ -3040,6 +3953,7 @@ function WorkBright({
   if (currentStep === 6) {
     return (
       <section className="workbright-browser-screen">
+  
         <div className="workbright-browser-bar">
           <button className="wb-bar-close">Close</button>
           <span className="wb-bar-lock" aria-hidden="true">&#x1F512;</span>
@@ -3047,7 +3961,10 @@ function WorkBright({
           <span className="wb-bar-refresh" aria-hidden="true">&#x21BB;</span>
         </div>
         <div className="workbright-form-content">
-          <FeedbackScreen onSubmit={(rating, comments) => onFeedbackSubmit(i9, rating, comments)} />
+          <FeedbackScreen
+            onSubmit={(rating, comments) => onFeedbackSubmit(i9, rating, comments)}
+            onAppRedirect={(context) => onAppRedirect(context)}
+          />
         </div>
       </section>
     );
@@ -3076,7 +3993,7 @@ function WorkBright({
       <div className="i9-review-section">
         <h3>Personal Information</h3>
         <I9InfoItem label="Name:" value={name || "None"} />
-        <I9InfoItem label="Birthdate:" value={profile.dateOfBirth ? formatDisplayDate(profile.dateOfBirth) : "None"} />
+        <I9InfoItem label="Birthdate:" value={profile.dateOfBirth ? formatDisplayDateLong(profile.dateOfBirth) : "None"} />
         <I9InfoItem label="SSN:" value={ssnLast4 ? `XXX-XX-${ssnLast4}` : "None"} />
       </div>
 
@@ -3088,7 +4005,7 @@ function WorkBright({
         )}
         {i9.citizenshipStatus === "noncitizen_authorized" && (
           <>
-            {i9.workAuthExpiration && <I9InfoItem label="Work Auth Expires:" value={i9.workAuthExpiration} />}
+            {i9.workAuthExpiration && <I9InfoItem label="Work Auth Expires:" value={formatDisplayDateLong(i9.workAuthExpiration)} />}
             {i9.authorizedNumberType === "a_number" && <I9InfoItem label="A-Number:" value={i9.uscisNumber} />}
             {i9.authorizedNumberType === "i94" && <I9InfoItem label="I-94 Number:" value={i9.i94Number} />}
             {i9.authorizedNumberType === "foreign_passport" && <I9InfoItem label="Passport Number:" value={i9.foreignPassportNumber} />}
@@ -3107,7 +4024,7 @@ function WorkBright({
                 <>
                   <I9InfoItem label="Issuing Authority:" value={data.issuingAuthority || "—"} />
                   <I9InfoItem label="Document Number:" value={data.documentNumber || "—"} />
-                  <I9InfoItem label="Expiration:" value={data.expirationDate || "—"} />
+                  <I9InfoItem label="Expiration:" value={data.expirationDate ? formatDisplayDateLong(data.expirationDate) : "—"} />
                 </>
               )}
             </div>
@@ -3118,7 +4035,7 @@ function WorkBright({
       {finalStatus && <p className="success">{finalStatus}</p>}
 
       <p className="i9-copy" style={{ marginTop: 16 }}>
-        By clicking "Sign and Submit", I attest under penalty of perjury that the information I provided is true and correct.
+        By clicking "Sign and Submit", you confirm that all the information you have submitted is accurate and complete to the best of your knowledge.
       </p>
     </>
   ), finalStatus
@@ -3165,15 +4082,14 @@ function PreAppReminderScreen({ issues }: { issues: ReminderIssue[] }) {
           ))}
         </div>
       </div>
-
-      <p className="preapp-note">
-        In the app, submit the same corrected information and documents that were verified here. Avoid repeating the earlier mistakes so your W-2 onboarding can be completed smoothly.
-      </p>
     </div>
   );
 }
 
-function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: string) => void }) {
+function FeedbackScreen({ onSubmit, onAppRedirect }: {
+  onSubmit: (rating: number, comments: string) => void;
+  onAppRedirect: (context: "pre_submit" | "post_submit") => void;
+}) {
   const [rating, setRating] = useState(0);
   const [hoveredStar, setHoveredStar] = useState(0);
   const [feedback, setFeedback] = useState("");
@@ -3212,9 +4128,8 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
           <div className="deeplink-copy">
             <span>Final step</span>
             <strong>Go back to the Instawork app</strong>
-            <p>Submit the same corrected information and documents you verified in this simulation.</p>
           </div>
-          <a href={instaworkDeepLink}>Open Instawork <span className="link-arrow">&#x2192;</span></a>
+          <a href={instaworkDeepLink} onClick={() => onAppRedirect("post_submit")}>Open Instawork <span className="link-arrow">&#x2192;</span></a>
         </div>
       </div>
     );
@@ -3232,8 +4147,15 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
         <div>
           <strong>This was only a simulation</strong>
           <p>
-            Your W-2 onboarding is not completed here. Go back to the Instawork app and submit the same corrected details and documents you verified in this practice flow.
+            Your W-2 onboarding is not completed here. Finish it in the Instawork app by submitting the same corrected details and documents you verified in this practice flow.
           </p>
+          <a
+            className="simulation-notice-cta"
+            href={instaworkDeepLink}
+            onClick={() => onAppRedirect("pre_submit")}
+          >
+            Open Instawork app <span className="link-arrow">&#x2192;</span>
+          </a>
         </div>
       </div>
 
@@ -3280,15 +4202,6 @@ function FeedbackScreen({ onSubmit }: { onSubmit: (rating: number, comments: str
       >
         Submit feedback
       </button>
-
-      <div className="app-deeplink-card">
-        <div className="deeplink-badge" aria-hidden="true"></div>
-        <div className="deeplink-copy">
-          <strong>Go back to the Instawork app</strong>
-          <p>Use what you learned here and submit the corrected W-2 onboarding in the app.</p>
-        </div>
-        <a href={instaworkDeepLink}>Open Instawork <span className="link-arrow">&#x2192;</span></a>
-      </div>
     </div>
   );
 }
@@ -3358,7 +4271,12 @@ function I9DocumentUpload({
     return () => { cameraStream?.getTracks().forEach(t => t.stop()); };
   }, [cameraStream]);
 
+  const simi9 = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("simi9") : null;
+  const prevSubStep = useRef(uploadSubStep);
   useEffect(() => {
+    if (simi9) return;
+    if (prevSubStep.current === uploadSubStep) { prevSubStep.current = uploadSubStep; return; }
+    prevSubStep.current = uploadSubStep;
     if (currentImageKey) {
       setI9(prev => ({
         ...prev,
@@ -3410,6 +4328,9 @@ function I9DocumentUpload({
       }
 
       const result = (await response.json()) as IdentityVerificationAnalyzeResponse;
+      const resultMessage = hasDocumentTypeMismatch(result.analysis)
+        ? selectedDocumentTypeMismatchMessage(result.analysis)
+        : result.userMessage;
 
       if (side === "back") {
         const detectedSide = result.analysis?.detectedSide || "unknown";
@@ -3417,7 +4338,7 @@ function I9DocumentUpload({
         if (!backVerified) {
           const message = detectedSide === "front"
             ? "This looks like the front side of the document. Please upload the back side."
-            : result.userMessage;
+            : resultMessage;
           onAuditAttempt({
             flow: "i9",
             side,
@@ -3430,15 +4351,15 @@ function I9DocumentUpload({
             documentPath: i9.documentPath,
             resultStatus: "fail",
             userMessage: message,
-            googleDriveFileId: result.googleDriveFileId,
-            googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId),
+            s3FileKey: result.s3FileKey,
+            s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey),
             flags: result.analysis?.flags ?? []
           });
           updateDocImage(imageKey, {
             imageBase64, fileName, analysis: null, status: "error",
             message,
-            googleDriveFileId: result.googleDriveFileId,
-            googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId)
+            s3FileKey: result.s3FileKey,
+            s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey)
           });
         } else {
           onAuditAttempt({
@@ -3453,15 +4374,15 @@ function I9DocumentUpload({
             documentPath: i9.documentPath,
             resultStatus: "pass",
             userMessage: "Back side captured successfully.",
-            googleDriveFileId: result.googleDriveFileId,
-            googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId),
+            s3FileKey: result.s3FileKey,
+            s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey),
             flags: result.analysis?.flags ?? []
           });
           updateDocImage(imageKey, {
             imageBase64, fileName, analysis: null, status: "success",
             message: "Back side captured successfully.",
-            googleDriveFileId: result.googleDriveFileId,
-            googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId)
+            s3FileKey: result.s3FileKey,
+            s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey)
           });
         }
         return;
@@ -3478,9 +4399,9 @@ function I9DocumentUpload({
         immigrationStatus: i9.citizenshipStatus,
         documentPath: i9.documentPath,
         resultStatus: result.analysis.complianceEligibility ? "pass" : "fail",
-        userMessage: result.userMessage,
-        googleDriveFileId: result.googleDriveFileId,
-        googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId),
+        userMessage: resultMessage,
+        s3FileKey: result.s3FileKey,
+        s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey),
         flags: result.analysis.flags
       });
       updateDocImage(imageKey, {
@@ -3488,9 +4409,9 @@ function I9DocumentUpload({
         fileName,
         analysis: result.analysis,
         status: result.analysis.complianceEligibility ? "success" : "error",
-        message: result.userMessage,
-        googleDriveFileId: result.googleDriveFileId,
-        googleDriveFileUrl: result.googleDriveFileUrl ?? googleDriveFileUrl(result.googleDriveFileId)
+        message: resultMessage,
+        s3FileKey: result.s3FileKey,
+        s3FileUrl: result.s3FileUrl ?? s3FileUrlFromKey(result.s3FileKey)
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Analysis failed. Try another image.";
@@ -3608,6 +4529,7 @@ function I9DocumentUpload({
 
   return (
     <section className="workbright-browser-screen">
+
       <div className="workbright-browser-bar">
         <button className="wb-bar-close">Close</button>
         <span className="wb-bar-lock" aria-hidden="true">&#x1F512;</span>
@@ -3660,13 +4582,13 @@ function I9DocumentUpload({
                 if (img.imageBase64) updateDocImage(currentImageKey, { ...EMPTY_DOC_IMAGE });
                 fileInputRef.current?.click();
               }}>
-                {img.imageBase64 ? (img.status === "error" ? "Try different image" : "Replace image") : "Upload image"}
-              </button>
+                {img.imageBase64 ? (img.status === "error" ? "Upload image" : "Replace image") : "Upload image"}
+        </button>
               <button disabled={img.status === "analyzing"} onClick={() => {
                 if (img.imageBase64) updateDocImage(currentImageKey, { ...EMPTY_DOC_IMAGE });
                 void openDocCamera();
               }}>
-                {img.imageBase64 && img.status === "error" ? "Retake photo" : "Use camera"}
+                {"Use camera"}
               </button>
             </div>
           )}

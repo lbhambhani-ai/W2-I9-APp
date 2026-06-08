@@ -27,3 +27,19 @@ npm-debug.log*
 
 # OCR model cache (large binary files)
 .ocr-cache/
+
+# Playwright persistent browser profile (Chrome cache, massive binary blobs)
+exports/figma-playwright-profile/
+
+# macOS metadata
+._*
+
+# Sensitive local report exports — never commit (financial/tips data)
+/*.csv
+
+# Figma workflow automation artifacts — not needed to run the app
+figma-workflow-screenshots/
+
+# Local n8n workflow export working copies (canonical versions live in n8n/)
+I9 Folder/
+IDV Folder/

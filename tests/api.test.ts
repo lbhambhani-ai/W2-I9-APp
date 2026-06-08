@@ -53,6 +53,8 @@ describe("API", () => {
       json: async () => ({
         source: "python",
         userMessage: "This ID matches your profile.",
+        s3FileKey: "identity/req_python_1/license_front.jpg",
+        s3FileUrl: "https://bucket.s3.us-west-2.amazonaws.com/identity/req_python_1/license_front.jpg",
         analysis: {
           documentDetected: true,
           userSelectedType: "drivers-license",
@@ -116,6 +118,12 @@ describe("API", () => {
     );
     expect(response.body.source).toBe("n8n-gemini-vision");
     expect(response.body.analysis.complianceEligibility).toBe(true);
+    // S3 file location must be passed through to the client (no invalid Google Drive links).
+    expect(response.body.s3FileKey).toBe("identity/req_python_1/license_front.jpg");
+    expect(response.body.s3FileUrl).toBe(
+      "https://bucket.s3.us-west-2.amazonaws.com/identity/req_python_1/license_front.jpg"
+    );
+    expect(response.body.googleDriveFileUrl).toBeUndefined();
   });
 
   it("forwards completed simulation summaries to the audit webhook", async () => {
@@ -142,12 +150,12 @@ describe("API", () => {
         identity: {
           finalStatus: "pass",
           attemptCount: 2,
-          driveLinks: ["https://drive.google.com/file/d/identity-pass/view"]
+          fileLinks: ["license_front.jpg — https://bucket.s3.amazonaws.com/docs/session-1/license_front.jpg"]
         },
         i9: {
           finalStatus: "pass",
           attemptCount: 4,
-          driveLinks: ["https://drive.google.com/file/d/i9-pass/view"],
+          fileLinks: ["ssn_card.jpg — https://bucket.s3.amazonaws.com/docs/session-1/ssn_card.jpg"],
           citizenshipStatus: "us_citizen",
           documentPath: "list_bc",
           selectedDocuments: ["List B: Driver's License", "List C: Social Security Card"]
@@ -164,6 +172,15 @@ describe("API", () => {
         body: expect.stringContaining("Lakshya")
       })
     );
+    // PII minimization: only name + email survive; DOB and phone are stripped before forwarding.
+    const forwardedSummary = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body);
+    expect(forwardedSummary.profile).toEqual({
+      legalFirstName: "Lakshya",
+      legalLastName: "Bhambhani",
+      email: "lakshya@example.com"
+    });
+    expect(JSON.stringify(forwardedSummary)).not.toContain("2003-09-17");
+    expect(JSON.stringify(forwardedSummary)).not.toContain("555");
   });
 
   it("forwards audit events to the configured n8n webhook", async () => {
@@ -187,8 +204,9 @@ describe("API", () => {
         selectedDocumentType: "drivers-license",
         resultStatus: "pass",
         userMessage: "Verified",
-        googleDriveFileId: "drive-file-123",
-        googleDriveFileUrl: "https://drive.google.com/file/d/drive-file-123/view"
+        fileName: "license_front.jpg",
+        s3FileKey: "identity/session-1/license_front.jpg",
+        s3FileUrl: "https://bucket.s3.us-west-2.amazonaws.com/identity/session-1/license_front.jpg"
       })
       .expect(200);
 
@@ -201,9 +219,12 @@ describe("API", () => {
           "content-type": "application/json",
           "x-instawork-audit-secret": "audit-secret"
         }),
-        body: expect.stringContaining("drive-file-123")
+        body: expect.stringContaining("identity/session-1/license_front.jpg")
       })
     );
+    const forwardedBody = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body);
+    expect(forwardedBody.s3FileKey).toBe("identity/session-1/license_front.jpg");
+    expect(JSON.stringify(forwardedBody)).not.toContain("drive.google.com");
   });
 
   it("accepts audit events locally when no audit webhook is configured", async () => {
@@ -223,12 +244,12 @@ describe("API", () => {
         identity: {
           finalStatus: "pass",
           attemptCount: 1,
-          driveLinks: ["https://drive.google.com/file/d/drive-file-123/view"]
+          fileLinks: ["license_front.jpg — https://bucket.s3.amazonaws.com/docs/session-1/license_front.jpg"]
         },
         i9: {
           finalStatus: "pass",
           attemptCount: 2,
-          driveLinks: [],
+          fileLinks: [],
           citizenshipStatus: "us_citizen",
           documentPath: "list_bc",
           selectedDocuments: ["Driver's License", "Social Security Card"]

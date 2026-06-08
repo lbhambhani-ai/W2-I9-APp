@@ -1,1 +1,1 @@
-"""Local Python identity verification service."""
+"""Local Python document validation service."""

@@ -64,7 +64,7 @@ function startPythonOcrSidecar() {
 
   proc.on("error", (err) => {
     console.warn(`[python-ocr] Failed to start sidecar: ${err.message}`);
-    console.warn("[python-ocr] Identity verification will use n8n only.");
+    console.warn("[python-ocr] Document validation will use n8n only.");
   });
 
   proc.on("exit", (code, signal) => {

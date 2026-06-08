@@ -11,10 +11,25 @@ export function googleDriveFileUrl(fileId: string | null | undefined): string | 
   return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
 }
 
+export function s3FileUrlFromKey(key: string | null | undefined): string | undefined {
+  if (!key) return undefined;
+  return `https://instawork-prod-ops-w2-i9-docs-dev.s3.us-west-2.amazonaws.com/${key
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
+}
+
+/** "<file name> — <AWS S3 location/URL>", or just the location when no name is known. */
+export function describeAttemptFile(attempt: AuditAttemptEvent): string | undefined {
+  const location = attempt.s3FileUrl ?? attempt.s3FileKey;
+  if (!location) return undefined;
+  return attempt.fileName ? `${attempt.fileName} — ${location}` : location;
+}
+
 export function summarizeAuditAttempts(attempts: AuditAttemptEvent[], flow: AuditAttemptEvent["flow"]): {
   finalStatus: AuditAttemptEvent["resultStatus"] | "not_started";
   attemptCount: number;
-  driveLinks: string[];
+  fileLinks: string[];
 } {
   const flowAttempts = attempts.filter((attempt) => attempt.flow === flow);
   const finalAttempt = flowAttempts.at(-1);
@@ -22,8 +37,8 @@ export function summarizeAuditAttempts(attempts: AuditAttemptEvent[], flow: Audi
   return {
     finalStatus: finalAttempt?.resultStatus ?? "not_started",
     attemptCount: flowAttempts.length,
-    driveLinks: flowAttempts
-      .map((attempt) => attempt.googleDriveFileUrl)
+    fileLinks: flowAttempts
+      .map(describeAttemptFile)
       .filter((link): link is string => Boolean(link))
   };
 }
@@ -70,7 +85,7 @@ export function buildReminderIssues(attempts: AuditAttemptEvent[]): ReminderIssu
       add("document-type", {
         label: "Choose the exact document type",
         detail: "One attempt did not match the document option you selected.",
-        fix: "In the app, select the same document type that is physically in your hand."
+        fix: "Make sure the document you upload matches the type you selected."
       });
     }
 

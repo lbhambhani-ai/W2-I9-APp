@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Instawork">
+  <defs>
+    <linearGradient id="blueGrad" x1="16" y1="25" x2="33" y2="75" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6A98FF"/>
+      <stop offset="100%" stop-color="#4B78F5"/>
+    </linearGradient>
+    <linearGradient id="grayGrad" x1="33" y1="75" x2="84" y2="25" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D1D5DB"/>
+      <stop offset="100%" stop-color="#E5E7EB"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Gray W part -->
+  <path d="M 33 75 L 50 25 L 67 75 L 84 25" fill="none" stroke="url(#grayGrad)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Blue stroke -->
+  <path d="M 16 25 L 33 75" fill="none" stroke="url(#blueGrad)" stroke-width="16" stroke-linecap="round"/>
+</svg>

@@ -20,60 +20,41 @@ Usage:
   OR use the manual header list below if you prefer to paste headers yourself.
 """
 
-SHEET_ID = "13ykmz2E-3fYnZOmMEDZAbFwuVSrOGSuKZmu1F8M13XQ"
+SHEET_ID = "19MM98YCU_Qtpz8YEXL6l6cHlQgVMNMAsbcDkA99e524"
 TAB_NAME = "audit_log"
 
 # ── Column definitions ─────────────────────────────────────────────────────────
 # Each entry: (header_label, width_pixels, section_color_hex)
-# Sections are color-coded for visual grouping in the sheet.
+# One row per event, 16 columns, matching the n8n "Normalize Audit Row" output.
 
 COLUMNS = [
     # ── Session / Meta (light blue-grey) ──────────────────────────────────────
     ("Timestamp",              180, "BDD7EE"),
+    ("Event",                  150, "BDD7EE"),
     ("Session ID",             220, "BDD7EE"),
-    ("Record Kind",            120, "BDD7EE"),
-    ("Flow",                   100, "BDD7EE"),
-    ("Attempt #",               80, "BDD7EE"),
-    ("Result",                 110, "BDD7EE"),
-    ("Side",                    80, "BDD7EE"),
 
-    # ── User Profile (light green) ─────────────────────────────────────────────
-    ("First Name",             130, "C6EFCE"),
-    ("Last Name",              130, "C6EFCE"),
-    ("Date of Birth",          130, "C6EFCE"),
-    ("Email",                  220, "C6EFCE"),
-    ("Phone",                  140, "C6EFCE"),
+    # ── User: name + email only (light green) ─────────────────────────────────
+    ("Name",                   200, "C6EFCE"),
+    ("Email",                  240, "C6EFCE"),
 
-    # ── Document Info (light yellow) ───────────────────────────────────────────
-    ("Doc Type (Selected)",    180, "FFEB9C"),
-    ("I-9 List",                80, "FFEB9C"),
-    ("Doc ID",                 160, "FFEB9C"),
-    ("Doc Label",              200, "FFEB9C"),
-    ("Immigration Status",     200, "FFEB9C"),
-    ("Document Path",          200, "FFEB9C"),
+    # ── Attempt / Document (light yellow) ─────────────────────────────────────
+    ("Flow",                   100, "FFEB9C"),
+    ("Attempt #",               80, "FFEB9C"),
+    ("Result",                 150, "FFEB9C"),
+    ("Document",               220, "FFEB9C"),
 
-    # ── Google Drive (light purple) ────────────────────────────────────────────
-    ("Drive File ID",          240, "E2CFFF"),
-    ("Drive File URL",         300, "E2CFFF"),
+    # ── AWS S3 file (light purple) ─────────────────────────────────────────────
+    ("File Name",              200, "E2CFFF"),
+    ("AWS File Location",      320, "E2CFFF"),
+    ("AWS File URL",           360, "E2CFFF"),
 
-    # ── Analysis Output (light orange) ────────────────────────────────────────
-    ("User Message",           360, "FCE4D6"),
-    ("Flags (JSON)",           300, "FCE4D6"),
+    # ── Status / Detail (light orange) ────────────────────────────────────────
+    ("Immigration Status",     180, "FCE4D6"),
+    ("Details",                420, "FCE4D6"),
 
-    # ── Identity Verification Summary (light teal) ────────────────────────────
-    ("ID Final Status",        140, "DDEBF7"),
-    ("ID Attempt Count",       120, "DDEBF7"),
-    ("ID Drive Links",         300, "DDEBF7"),
-
-    # ── I-9 Summary (light pink) ───────────────────────────────────────────────
-    ("I-9 Final Status",       140, "FCE4D6"),
-    ("I-9 Attempt Count",      120, "FCE4D6"),
-    ("I-9 Drive Links",        300, "FCE4D6"),
-    ("I-9 Selected Docs",      300, "FCE4D6"),
-
-    # ── Feedback (light lavender) ──────────────────────────────────────────────
-    ("Rating (1–5)",            100, "EAD1DC"),
-    ("Feedback Comments",       400, "EAD1DC"),
+    # ── Intercom (light lavender) ──────────────────────────────────────────────
+    ("Intercom User ID",       160, "EAD1DC"),
+    ("Intercom Ticket ID",     150, "EAD1DC"),
 ]
 
 HEADER_LABELS = [col[0] for col in COLUMNS]
@@ -81,37 +62,22 @@ HEADER_LABELS = [col[0] for col in COLUMNS]
 # ── n8n field mapping (audit workflow Normalize node key → column header) ──────
 # This shows which n8n output key maps to which column (for reference).
 N8N_FIELD_MAP = {
-    "timestamp":            "Timestamp",
-    "sessionId":            "Session ID",
-    "recordKind":           "Record Kind",
-    "flow":                 "Flow",
-    "attemptNumber":        "Attempt #",
-    "resultStatus":         "Result",
-    "side":                 "Side",
-    "userFirstName":        "First Name",
-    "userLastName":         "Last Name",
-    "dateOfBirth":          "Date of Birth",
-    "email":                "Email",
-    "phone":                "Phone",
-    "selectedDocumentType": "Doc Type (Selected)",
-    "selectedList":         "I-9 List",
-    "selectedDocumentId":   "Doc ID",
-    "selectedDocumentLabel":"Doc Label",
-    "immigrationStatus":    "Immigration Status",
-    "documentPath":         "Document Path",
-    "googleDriveFileId":    "Drive File ID",
-    "googleDriveFileUrl":   "Drive File URL",
-    "userMessage":          "User Message",
-    "flagsJson":            "Flags (JSON)",
-    "identityFinalStatus":  "ID Final Status",
-    "identityAttemptCount": "ID Attempt Count",
-    "identityDriveLinks":   "ID Drive Links",
-    "i9FinalStatus":        "I-9 Final Status",
-    "i9AttemptCount":       "I-9 Attempt Count",
-    "i9DriveLinks":         "I-9 Drive Links",
-    "i9SelectedDocuments":  "I-9 Selected Docs",
-    "rating":               "Rating (1–5)",
-    "feedback":             "Feedback Comments",
+    "Timestamp":           "Timestamp",
+    "Event":               "Event",
+    "Session ID":          "Session ID",
+    "Name":                "Name",
+    "Email":               "Email",
+    "Flow":                "Flow",
+    "Attempt #":           "Attempt #",
+    "Result":              "Result",
+    "Document":            "Document",
+    "File Name":           "File Name",
+    "AWS File Location":   "AWS File Location",
+    "AWS File URL":        "AWS File URL",
+    "Immigration Status":  "Immigration Status",
+    "Details":             "Details",
+    "Intercom User ID":    "Intercom User ID",
+    "Intercom Ticket ID":  "Intercom Ticket ID",
 }
 
 
@@ -282,14 +248,12 @@ def print_manual_instructions():
     print("\t".join(HEADER_LABELS))
     print(f"\nTotal columns: {len(HEADER_LABELS)}")
     print("\nColumn color groupings:")
-    print("  Cols  1-7  (A-G)  : Session/Meta         → Blue-grey  #BDD7EE")
-    print("  Cols  8-12 (H-L)  : User Profile         → Green      #C6EFCE")
-    print("  Cols 13-18 (M-R)  : Document Info        → Yellow     #FFEB9C")
-    print("  Cols 19-20 (S-T)  : Google Drive         → Purple     #E2CFFF")
-    print("  Cols 21-22 (U-V)  : Analysis Output      → Orange     #FCE4D6")
-    print("  Cols 23-25 (W-Y)  : Identity Summary     → Teal       #DDEBF7")
-    print("  Cols 26-29 (Z-AC) : I-9 Summary          → Pink       #FCE4D6")
-    print("  Cols 30-31 (AD-AE): Feedback             → Lavender   #EAD1DC")
+    print("  Cols  1-3  (A-C)  : Session/Meta   → Blue-grey  #BDD7EE")
+    print("  Cols  4-5  (D-E)  : User (name+email) → Green    #C6EFCE")
+    print("  Cols  6-9  (F-I)  : Attempt/Document → Yellow    #FFEB9C")
+    print("  Cols 10-12 (J-L)  : AWS S3 File    → Purple     #E2CFFF")
+    print("  Cols 13-14 (M-N)  : Status/Detail  → Orange     #FCE4D6")
+    print("  Cols 15-16 (O-P)  : Intercom       → Lavender   #EAD1DC")
 
 
 if __name__ == "__main__":

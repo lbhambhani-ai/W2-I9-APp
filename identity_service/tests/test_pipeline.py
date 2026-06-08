@@ -966,7 +966,7 @@ class IdentityPipelineTest(unittest.TestCase):
         self.assertEqual(fields["expiration_date"], "2027-09-17")
         self.assertEqual(result["analysis"]["validationResults"]["dobMatch"]["status"], "MATCH")
         self.assertEqual(result["analysis"]["validationResults"]["nameMatch"]["status"], "MISMATCH",
-            "BHAMBANI vs BHAMBHANI must be MISMATCH - exact matching required for identity verification")
+            "BHAMBANI vs BHAMBHANI must be MISMATCH - exact matching required for document validation")
 
     def test_extracts_new_york_state_id_exact_name_match(self):
         profile = {**PROFILE, "dateOfBirth": "2003-09-17"}

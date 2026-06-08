@@ -1,0 +1,382 @@
+{
+  "name": "I-9 Document Verification - Gemini Vision - Dedicated Doc Rules",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "i9/verify-document",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "019dfc14-e09c-468b-8445-037cd80e43fa",
+      "name": "I9 Verification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        2320
+      ],
+      "webhookId": "i9-verify-document"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst p = body.profile || {};\nconst i9 = body.i9Context || {};\nconst imgLen = (body.imageBase64 || '').length;\n\nconsole.log('\\n======== I-9 DOCUMENT INTAKE ========');\nconsole.log('[I9] requestId=' + (body.requestId || 'MISSING'));\nconsole.log('[I9] immigrationStatus=' + (i9.citizenshipStatus || 'MISSING'));\nconsole.log('[I9] documentPath=' + (i9.documentPath || 'MISSING'));\nconsole.log('[I9] expectedList=' + (i9.expectedList || 'MISSING'));\nconsole.log('[I9] expectedDocId=' + (i9.expectedDocId || 'MISSING'));\nconsole.log('[I9] expectedDocLabel=' + (i9.expectedDocLabel || 'MISSING'));\nconsole.log('[I9] selectedDocumentType=' + (body.selectedDocumentType || 'MISSING'));\nconsole.log('[I9] documentSide=' + (body.documentSide || 'MISSING'));\nconsole.log('[I9] profile: firstName=' + (p.legalFirstName || 'MISSING') + ' lastName=' + (p.legalLastName || 'MISSING') + ' DOB=' + (p.dateOfBirth || 'MISSING'));\nconsole.log('[I9] imageBase64 length=' + imgLen + ' chars (~' + Math.round(imgLen * 0.75 / 1024) + ' KB)');\nconsole.log('=====================================\\n');\n\nconst allowedTypes = ['drivers-license','state-id','passport','passport-card','permanent-resident-card','employment-authorization-card','military-id','unknown'];\nconst allowedSides = ['front','back'];\nconst missing = [];\nfor (const path of ['requestId','selectedDocumentType','documentSide','imageBase64','profile.legalFirstName','profile.legalLastName','profile.dateOfBirth']) {\n  const val = path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), body);\n  if (val === undefined || val === null || val === '') missing.push(path);\n}\nif (!i9.citizenshipStatus) missing.push('i9Context.citizenshipStatus');\nif (!i9.expectedList) missing.push('i9Context.expectedList');\nif (!i9.expectedDocLabel) missing.push('i9Context.expectedDocLabel');\n\nconst invalid = [];\nif (body.selectedDocumentType && !allowedTypes.includes(body.selectedDocumentType)) invalid.push('selectedDocumentType');\nif (body.documentSide && !allowedSides.includes(body.documentSide)) invalid.push('documentSide');\n\nif (missing.length || invalid.length) {\n  console.log('[I9] REJECTED: missing=' + JSON.stringify(missing) + ' invalid=' + JSON.stringify(invalid));\n  return [{ json: { valid: false, response: { success: false, requestId: body.requestId || null, error: { code: 'INVALID_REQUEST', message: 'Missing or invalid fields.', missing, invalid }, analysis: null } } }];\n}\nconsole.log('[I9] VALID - proceeding');\nreturn [{ json: { ...body, valid: true } }];"
+      },
+      "id": "4bf33587-3d9d-464a-9848-9e988717b8dd",
+      "name": "Validate I9 Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1888,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-cond",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7786d4ba-512c-4f6b-82bf-eac305973867",
+      "name": "Is I9 Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2112,
+        2320
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "609100f1-9962-4f33-bc97-d24c8f9d9c9b",
+      "name": "Respond Invalid I9 Request",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2320,
+        2416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $json;\nconst raw = String(input.imageBase64 || '');\nconst match = raw.match(/^data:(.*?);base64,(.*)$/);\nconst mimeType = match ? (match[1] || 'image/png') : 'image/png';\nconst base64 = match ? match[2] : raw;\nconst extByMime = { 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };\nconst ext = extByMime[mimeType] || 'png';\nconst fileName = `${input.requestId}-i9-${input.i9Context?.expectedList || 'doc'}-${input.documentSide}.${ext}`;\nconst buffer = Buffer.from(base64, 'base64');\nif (!buffer.length) throw new Error('imageBase64 decoded to empty buffer');\nconst binary = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);\nreturn [{\n  json: {\n    ...input,\n    mimeType,\n    fileName,\n    imageDataUrl: raw.startsWith('data:') ? raw : `data:${mimeType};base64,${base64}`\n  },\n  binary: { image: binary, data: binary }\n}];"
+      },
+      "id": "04a4b54e-cb3e-4e92-8cf7-c191849f83f7",
+      "name": "Convert I9 Image To Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        2208
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "image",
+        "name": "={{ $json.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "17N2GfPmuGpZ9OErpOwNHl_xv8L5rB9Sy"
+        },
+        "options": {}
+      },
+      "id": "10c7fa40-fac5-477a-a083-713819300be6",
+      "name": "Upload I9 Doc To Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2544,
+        2208
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "2sGyO0NkRuwAciq3",
+          "name": "LB workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $items('Convert I9 Image To Binary')[0].json;\nconst upload = $json;\nconst googleDriveFileId = upload.id || upload.fileId || null;\nconst p = request.profile || {};\nconst i9 = request.i9Context || {};\n\nconsole.log('[I9-PREPARE] requestId=' + request.requestId);\nconsole.log('[I9-PREPARE] driveFileId=' + googleDriveFileId);\nconsole.log('[I9-PREPARE] expectedList=' + i9.expectedList + ' expectedDoc=' + i9.expectedDocLabel);\nconsole.log('[I9-PREPARE] citizenshipStatus=' + i9.citizenshipStatus);\nconsole.log('[I9-PREPARE] selectedDocumentType=' + request.selectedDocumentType);\n\nconst binItem = $items('Convert I9 Image To Binary')[0].binary || {};\nconst imgBin = binItem.image || binItem.data || null;\nreturn [{\n  json: {\n    requestId: request.requestId,\n    selectedDocumentType: request.selectedDocumentType,\n    documentSide: request.documentSide,\n    mimeType: request.mimeType,\n    fileName: request.fileName,\n    imageDataUrl: request.imageDataUrl,\n    googleDriveFileId,\n    profile: {\n      legalFirstName: p.legalFirstName || '',\n      legalMiddleName: p.legalMiddleName || '',\n      legalLastName: p.legalLastName || '',\n      dateOfBirth: p.dateOfBirth || ''\n    },\n    i9Context: {\n      citizenshipStatus: i9.citizenshipStatus || '',\n      documentPath: i9.documentPath || '',\n      expectedList: i9.expectedList || '',\n      expectedDocId: i9.expectedDocId || '',\n      expectedDocLabel: i9.expectedDocLabel || ''\n    }\n  },\n  binary: imgBin ? { image: imgBin, data: imgBin } : undefined\n}];"
+      },
+      "id": "48f2be57-826f-47e9-87a6-35f181b302ca",
+      "name": "Prepare I9 Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2768,
+        2208
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "=You are an I-9 document verification system. Analyze the uploaded image and return ONLY valid JSON — no Markdown, no code fences, no prose.\n\nCONTEXT:\n- Immigration status: {{ $json.i9Context.citizenshipStatus }}\n- Document path: {{ $json.i9Context.documentPath }}\n- Expected list: {{ $json.i9Context.expectedList }}\n- Expected document: {{ $json.i9Context.expectedDocLabel }}\n- Selected gov type: {{ $json.selectedDocumentType }}\n- Document side submitted: {{ $json.documentSide }}\n- Profile name: {{ $json.profile.legalFirstName }} {{ $json.profile.legalLastName }}\n- Profile DOB: {{ $json.profile.dateOfBirth }}\n\n{{ $json.documentSide === 'back' ? 'BACK SIDE MODE — This is the back of the document. Your ONLY job is to confirm this is the correct back side of the expected document type. Do NOT check name, DOB, expiration, or address — those were verified on the front. Only check: (1) Is this actually the back side of a document (not the front again)? (2) Does it match the expected document type? If it is the correct back side of the correct document type, set complianceEligibility=true and write a userMessage confirming the back side was accepted (e.g. \"Back of [detected document name] accepted.\"). If it shows the front side again, set detectedSide=\"front\", sideMatchesSelected=false, flag SIDE_MISMATCH with severity CRITICAL, complianceEligibility=false, userMessage explaining the issue. If it is the back of a completely different document type, set documentTypeMatch=false, flag WRONG_LIST or WRONG_DOCUMENT, complianceEligibility=false. For ALL back-side submissions, set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n\nSTRICT BACK-SIDE DISQUALIFIER RULES (apply whenever documentSide is back):\n- If the image shows a portrait/photo of the person, it is the FRONT side for driver's license, state ID, school ID, military ID, passport card, PRC, or EAD. Set detectedSide=\"front\", sideMatchesSelected=false, add SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- If the image clearly shows front-face identity fields such as full name, DOB, EXP/expiration date, issue date, residential address, sex, height, eyes, or weight in the main layout, it is the FRONT side for driver's license/state ID style documents. Set detectedSide=\"front\" and fail SIDE_MISMATCH.\n- For driver's license/state ID backs, expect PDF417 barcode, magnetic stripe, class/restriction/endorsement text, donor/living will indicators, or back-side instructions; usually no portrait photo.\n- For passport card backs, expect MRZ/barcode/RFID/eagle/security text and no portrait.\n- For PRC/EAD backs, expect barcode/MRZ/security/fingerprint style elements and no portrait.\n- For Social Security card backs, expect instructions/signature/legal text and no SSN/name front face.\n- When back is selected, never accept an image as back just because it is a supported document type; it must have back-side visual characteristics and must NOT have front-side identity layout.\n : 'FRONT SIDE MODE — Perform full verification below.' }}\n\n{{ $json.documentSide !== 'back' ? 'FRONT SIDE TASKS:\n0. CRITICAL SIDE CHECK FIRST: Before anything else, determine if the image shows the expected FRONT or BACK side for the selected I-9 document. Use expectedDocId and expectedDocLabel when selectedDocumentType is unknown. If the uploaded side does not match documentSide, set sideMatchesSelected=false, add SIDE_MISMATCH severity CRITICAL, set complianceEligibility=false, and do NOT proceed with name/DOB/info checks.\n\nUNIVERSAL SIDE DETECTION AND INFO CHECK RULES FOR ALL I-9 DOCUMENTS:\n- Always use i9Context.expectedDocId and expectedDocLabel as the source of truth for what document the user selected. This is especially important when selected gov type is \"unknown\".\n- Before checking name, DOB, expiration, document type, or immigration status, first decide whether the image shows the expected side: front or back.\n- If documentSide=\"front\" but the image shows the back side, set detectedSide=\"back\", sideMatchesSelected=false, add SIDE_MISMATCH severity CRITICAL, set complianceEligibility=false, and do NOT continue with info checks.\n- If documentSide=\"back\" but the image shows the front side, set detectedSide=\"front\", sideMatchesSelected=false, add SIDE_MISMATCH severity CRITICAL, set complianceEligibility=false, and do NOT continue with info checks.\n- Do not hallucinate fields that are not printed on that document type. Use NOT_CHECKED for unavailable fields.\n\nDOCUMENT-SPECIFIC SIDE DETECTION:\nList A:\n- us_passport / foreign_passport_i551 / foreign_passport_i94: front is the passport biographic/photo page with portrait, name, DOB, passport number, nationality, expiration. Back side is not the biographic page; it may be cover/blank/endorsement/visa/I-551/I-94 pages depending expected document. If the photo biographic page is uploaded when back is requested, mark SIDE_MISMATCH.\n- us_passport_card: front has portrait, name, DOB, passport card number, expiration. Back has no portrait and usually has machine-readable zone/barcode/RFID/eagle/security text.\n- permanent_resident_card: front has portrait, name, category, USCIS/A-number, DOB/expiration. Back has MRZ/barcode/security/fingerprint style elements and no portrait.\n- employment_auth_doc / employment_auth_doc_c: front has portrait, name, category, card number/USCIS number, DOB/expiration. Back has barcode/MRZ/security text and no portrait.\n\nList B:\n- drivers_license / state_id_card: front has portrait, name, DOB, address, license/ID number, expiration. Back has PDF417 barcode/magnetic stripe/endorsements/restrictions and normally no portrait.\n- school_id: front has student portrait/name/school name/id number. Back usually has barcode/magnetic stripe/school instructions/return text and may not have a portrait.\n- voter_registration: front has voter name/address/registration details/precinct or county. Back usually has mailing/address change/instructions/signature text. It usually has no photo, DOB, or expiration.\n- military_card / military_dependent: front has portrait/name/DoD or sponsor details/expiration. Back has barcode/magnetic stripe/benefits/sponsor/instructions and normally no portrait.\n\nList C:\n- social_security_card: front has \"Social Security\", SSN, worker name, and no photo/DOB/expiration. Back has instructions/signature/legal text and may not show SSN/name clearly.\n- birth_certificate: front/certificate face has name, DOB/place of birth, parent names, registrar/seal/certificate number. Back may be blank or contain filing/stamp/instruction/legal text; do not hallucinate a card front/back structure.\n- us_citizen_id: front has Form I-197 / U.S. Citizen ID Card identity information, usually name/photo/id details. Back has instructions/security/agency text.\n- tribal_document: front varies by tribe but usually has tribal name/seal, person name, enrollment/member number, sometimes photo/DOB. Back may have barcode, instructions, seal, or blank/security text.\n\n\n\nDEDICATED DOCUMENT RULES FOR HIGH-RISK I-9 DOCUMENTS:\n\nBIRTH CERTIFICATE RULES (List C):\n- If expectedDocId is \"birth_certificate\" or expected document contains \"Birth Certificate\", treat expected document as a Birth Certificate even when selected gov type is \"unknown\".\n- detectedDocumentType MUST be \"birth-certificate\", detectedDocumentTypeLabel MUST be \"Birth Certificate\", actualDocumentList MUST be \"C\".\n- Birth Certificate front/certificate face normally contains child/person name, date of birth, place of birth, parent name(s), registrar/county/state seal, file/certificate number, and filed/issued dates.\n- Birth Certificates usually have NO portrait photo and NO expiration date. Do NOT hallucinate a photo or expiration. Set expirationStatus=\"NOT_CHECKED\" unless an actual expiration date is printed.\n- For Birth Certificate front/certificate face, check name and DOB when readable. If name or DOB differs from profile, add NAME_MISMATCH or DOB_MISMATCH severity CRITICAL and complianceEligibility=false.\n- Birth Certificate back may be blank or contain stamps, filing/legal text, certification notes, or official seals. If back is requested, only verify it is the back/official reverse of a birth certificate; set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If front is requested and the image is blank/back/stamp-only/instruction-only without the certificate face, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n\nSOCIAL SECURITY CARD RULES (List C):\n- If expectedDocId is \"social_security_card\" or expected document contains \"Social Security Card\", treat expected document as a Social Security Card even when selected gov type is \"unknown\".\n- detectedDocumentType MUST be \"social-security-card\", detectedDocumentTypeLabel MUST be \"Social Security Card\", actualDocumentList MUST be \"C\".\n- Social Security Card front normally shows \"Social Security\", a Social Security number, and worker name. It has NO photo, NO DOB, and NO expiration. Do NOT hallucinate DOB, photo, or expiration.\n- For Social Security Card front, check the worker name against profile. Set dobMatch.status=\"NOT_CHECKED\" and expirationStatus=\"NOT_CHECKED\".\n- Social Security Card back usually contains instructions, signature/legal text, and may not show SSN/name clearly. If back is requested, only verify side/type; set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If front is requested but only instruction/legal/signature text is shown, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- If back is requested but SSN/name/front face is shown, set detectedSide=\"front\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- For unrestricted Social Security Card, reject cards showing restrictions such as \"VALID FOR WORK ONLY WITH DHS AUTHORIZATION\", \"VALID FOR WORK ONLY WITH INS AUTHORIZATION\", or \"NOT VALID FOR EMPLOYMENT\" by adding STATUS_INELIGIBLE severity CRITICAL and complianceEligibility=false.\n\nPERMANENT RESIDENT CARD RULES (List A — Green Card):\n- If expectedDocId is \"permanent_resident_card\" or expected document contains \"Permanent Resident Card\" or \"Green Card\", treat expected document as a Permanent Resident Card.\n- detectedDocumentType MUST be \"permanent-resident-card\", detectedDocumentTypeLabel MUST be \"US Permanent Resident Card\", actualDocumentList MUST be \"A\".\n- PRC front normally has portrait/photo, name, USCIS/A-number, card/category code, country of birth, DOB, resident since date, card expiration, and security artwork.\n- PRC back normally has no portrait and contains MRZ lines, barcode/2D code, USCIS/security text, fingerprint/security area, or other reverse-side security features.\n- If front is requested, check name, DOB, document type, expiration, and documentAllowedForStatus. Extract A-number when visible. If profile/context contains a known A-number and visible card A-number differs, add DOCUMENT_NUMBER_MISMATCH severity CRITICAL and complianceEligibility=false.\n- If back is requested, do NOT re-check name, DOB, address, or expiration. Only verify correct back side/type and extract/cross-check A-number if visible. Set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If back is requested but the image shows portrait/name/DOB/expiration/front layout, set detectedSide=\"front\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- If front is requested but the image shows MRZ/barcode/security reverse with no portrait/front identity layout, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n\nDOCUMENT-SPECIFIC INFO CHECKS:\n- Name must be checked on any FRONT side where a name is visible: all List A, all List B, and List C front documents.\n- DOB must be checked only when the selected document type normally contains DOB: passport, passport card, permanent resident card, EAD, driver's license, state ID, military IDs, birth certificate, and any tribal/US citizen ID if DOB is visible.\n- DOB must be NOT_CHECKED for Social Security Card, voter registration, and school ID unless DOB is clearly printed.\n- Expiration must be checked on the FRONT side for documents that normally expire or show an expiration date: passports/passport cards, PRC, EAD, driver's license/state ID (including fields labelled 4b EXP), school ID if printed, military IDs, and some tribal/US citizen IDs if printed. If a clear unexpired date is visible, set expirationStatus=NOT_EXPIRED; do not leave it NOT_CHECKED.\n- Expiration must be NOT_CHECKED for Social Security Card, birth certificate, and voter registration unless an expiration date is clearly printed.\n- If a document has restriction text that makes it invalid for the selected I-9 purpose, add STATUS_INELIGIBLE severity CRITICAL and complianceEligibility=false.\n\n1. Detect what document is actually in the image. If the image does not contain a recognizable US government-issued identity document, set documentDetected=false, detectedDocumentType=unknown, complianceEligibility=false, and write a userMessage explaining the document was not recognized.\n2. Determine which I-9 list the ACTUAL document belongs to:\n   - List A: US Passport, US Passport Card, Permanent Resident Card, Employment Authorization Document, Foreign Passport with I-551/I-94\n   - List B: Driver License, State ID Card, School ID, Voter Registration Card, Military Card/ID\n   - List C: Social Security Card, Birth Certificate, US Citizen ID Card, Native American Tribal Document, Employment Authorization Document (work auth only)\n3. Check if actual doc matches expected (list + label).\n4. CROSS-LIST MISMATCH: If actual list differs from expected list, flag WRONG_LIST with specific message naming both lists.\n5. WRONG DOCUMENT: If same list but different document, flag WRONG_DOCUMENT naming both documents.\n6. Compare name (case-insensitive, ignore middle names, accept LAST FIRST order) and DOB to profile. Dates: normalize to YYYY-MM-DD.\n7. Check expiration date against today.\n8. Verify document is appropriate for immigration status.\n\nSOCIAL SECURITY CARD RULES (List C — Work Authorization):\n- If expectedDocId is \"social_security_card\" or expected document contains \"Social Security Card\", treat the expected document as a Social Security Card even when selected gov type is \"unknown\".\n- A Social Security Card FRONT usually shows \"Social Security\", a Social Security number, and the worker name. It has NO photo, NO date of birth, and NO expiration date. Do NOT hallucinate DOB, photo, or expiration.\n- A Social Security Card BACK usually contains instructions/signature/legal text and may not show the SSN/name clearly. If documentSide is \"front\" and the image only shows back-side instruction text, set detectedSide=\"back\", sideMatchesSelected=false, add SIDE_MISMATCH flag with severity CRITICAL, and set complianceEligibility=false.\n- If documentSide is \"back\" and the image shows the SSN/name/front face, set detectedSide=\"front\", sideMatchesSelected=false, add SIDE_MISMATCH flag with severity CRITICAL, and set complianceEligibility=false.\n- When a Social Security Card is detected, set detectedDocumentType=\"social-security-card\", detectedDocumentTypeLabel=\"Social Security Card\", and actualDocumentList=\"C\".\n- For Social Security Card front: check the name against the profile. Set dobMatch.status=\"NOT_CHECKED\" and expirationStatus=\"NOT_CHECKED\" because DOB/expiration are not on this card.\n- For unrestricted Social Security Card, reject cards showing restrictions such as \"VALID FOR WORK ONLY WITH DHS AUTHORIZATION\", \"VALID FOR WORK ONLY WITH INS AUTHORIZATION\", or \"NOT VALID FOR EMPLOYMENT\" by adding STATUS_INELIGIBLE severity CRITICAL and complianceEligibility=false.\n\nIMMIGRATION STATUS RULES:\n- us_citizen: US Passport, Passport Card (A), Driver License, State ID (B), Social Security Card, Birth Certificate (C)\n- noncitizen_national: Same as citizen plus foreign passport options\n- lawful_permanent_resident: Permanent Resident Card (A), Driver License, State ID (B), Social Security Card (C)\n- noncitizen_authorized: Employment Authorization Document (A), Driver License, State ID (B), EAD (C)\n\nMANDATORY FLAG SEVERITY RULES (NEVER violate):\n- SIDE_MISMATCH → severity MUST be CRITICAL\n- NAME_MISMATCH → severity MUST be CRITICAL\n- DOB_MISMATCH → severity MUST be CRITICAL\n- WRONG_LIST → severity MUST be CRITICAL\n- WRONG_DOCUMENT → severity MUST be CRITICAL\n- IMAGE_TAMPERING → severity MUST be CRITICAL\n- DOCUMENT_EXPIRED → severity MUST be CRITICAL\n- STATUS_INELIGIBLE → severity MUST be CRITICAL\n- NO_DOCUMENT_DETECTED → severity MUST be CRITICAL\n\nFRONT SIDE complianceEligibility RULES:\ncomplianceEligibility = true ONLY when ALL of the following are true:\n1. documentDetected = true\n2. sideMatchesSelected = true (the image actually shows the FRONT side)\n3. listMatch = true\n4. documentTypeMatch = true\n5. nameMatch.status = MATCH (NOT \"NOT_CHECKED\" — on the front side you MUST check the name)\n6. dobMatch.status = MATCH (NOT \"NOT_CHECKED\" — on the front side you MUST check the DOB)\n7. Document is not expired\n8. documentAllowedForStatus = true\n9. No IMAGE_TAMPERING detected\n10. flags array contains ZERO flags with severity CRITICAL\nIf ANY of these conditions fail, complianceEligibility MUST be false.\n\nNAME/DOB CHECK IS MANDATORY ON FRONT SIDE: If the name on the document does not match the profile name (case-insensitive, ignore middle name differences, accept LAST FIRST order), you MUST set nameMatch.status=MISMATCH AND add a NAME_MISMATCH flag with severity CRITICAL AND set complianceEligibility=false. Same for DOB: if dates differ after normalizing to YYYY-MM-DD, you MUST set dobMatch.status=MISMATCH AND add a DOB_MISMATCH flag with severity CRITICAL AND set complianceEligibility=false.\n\nCRITICAL TAMPER RULE: If the image contains watermarks, sample overlays, blankpsd.com, template text, or any sign it is a fake/edited/digital document: flag IMAGE_TAMPERING (severity CRITICAL), set complianceEligibility=false, and write a userMessage explaining the document appears to be a sample or digitally altered.\n\nuserMessage RULES (write a unique, specific message based on the actual document found — never copy example text):\n- If document not recognized: \"We could not detect a valid US identity document in this image. Please upload a clear photo of your [expected doc label].\"\n- If wrong list: \"You selected [expected doc] (List [X]) but uploaded a [actual doc], which is a List [Y] document. Please upload your [expected doc] instead.\"\n- If wrong doc same list: \"You selected [expected doc] but this appears to be a [actual doc]. Please upload the correct document.\"\n- If name mismatch: \"The name on this [doc type] does not match your profile.\"\n- If DOB mismatch: \"The date of birth on this [doc type] does not match your profile.\"\n- If expired: \"This [doc type] expired on [date]. Please provide a valid, unexpired document.\"\n- If all checks pass: write a confirmation like \"[Detected document label] verified successfully.\"' : '' }}\n\nSUPPORTED detectedDocumentType values:\n  drivers-license | state-id | passport | passport-card | permanent-resident-card | employment-authorization-card | military-id | school-id | voter-registration-card | social-security-card | birth-certificate | us-citizen-id-card | tribal-document | unknown\n\nRETURN THIS EXACT JSON STRUCTURE (fill all values based on the actual image — do NOT copy these placeholder values):\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"<actual detected type, e.g. drivers-license>\",\n  \"detectedDocumentTypeLabel\": \"<human readable label of what you actually detected>\",\n  \"actualDocumentList\": \"<A, B, or C>\",\n  \"documentTypeMatch\": true,\n  \"listMatch\": true,\n  \"detectedSide\": \"<front or back — what you actually see in the image>\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null,\n    \"document_number\": null, \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"dobMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"NOT_CHECKED\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"immigrationStatusCheck\": {\n    \"documentAllowedForStatus\": true,\n    \"reason\": null\n  },\n  \"crossListMismatch\": {\n    \"detected\": false,\n    \"expectedList\": \"<expected list from context>\",\n    \"actualList\": \"<actual list of detected doc>\",\n    \"message\": null\n  },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"<write a specific message based on verification result — never copy example text>\"\n}\n\nFLAG FORMAT: { \"severity\": \"CRITICAL\", \"code\": \"FLAG_CODE\", \"message\": \"Human-readable description\" }\nALL FLAGS EXCEPT IMAGE_QUALITY_LOW MUST HAVE severity=CRITICAL. NAME_MISMATCH and DOB_MISMATCH are ALWAYS CRITICAL — NEVER use WARNING or INFO for them.\nFLAG CODES: WRONG_LIST | WRONG_DOCUMENT | SIDE_MISMATCH | NAME_MISMATCH | DOB_MISMATCH | DOCUMENT_EXPIRED | STATUS_INELIGIBLE | IMAGE_QUALITY_LOW | NO_DOCUMENT_DETECTED | IMAGE_TAMPERING\n\nReturn ONLY strict JSON. No Markdown. No code fences. Never expose internal flag codes in userMessage.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "cb8dd999-6620-4d85-935a-107cbd9c84e2",
+      "name": "Analyze I9 Document",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        2992,
+        2208
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "m4VCWj43BbfwQLJf",
+          "name": "Prod Ops Gemini Key"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\nconsole.log('[I9-FALLBACK] Primary Gemini 2.5 Flash failed: ' + JSON.stringify(error?.message || error?.error || 'unknown'));\nconsole.log('[I9-FALLBACK] Routing to gemini-2.0-flash...');\n\nconst contextItem = $('Prepare I9 Context').item;\nconst imgBin = contextItem.binary?.image || contextItem.binary?.data || null;\n\nreturn [{\n  json: { ...contextItem.json, _fallbackReason: String(error?.message || error?.error || 'Primary model unavailable') },\n  binary: imgBin ? { image: imgBin, data: imgBin } : undefined\n}];"
+      },
+      "id": "b5823c80-d359-48fc-ace0-10e9f1ad60c7",
+      "name": "Prepare I9 Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2992,
+        2448
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.0-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.0-flash"
+        },
+        "text": "=You are an I-9 document verification system. Analyze the uploaded image and return ONLY valid JSON — no Markdown, no code fences, no prose.\n\nCONTEXT:\n- Immigration status: {{ $json.i9Context.citizenshipStatus }}\n- Expected list: {{ $json.i9Context.expectedList }}\n- Expected document: {{ $json.i9Context.expectedDocLabel }}\n- Selected gov type: {{ $json.selectedDocumentType }}\n- Document side submitted: {{ $json.documentSide }}\n- Profile name: {{ $json.profile.legalFirstName }} {{ $json.profile.legalLastName }}\n- Profile DOB: {{ $json.profile.dateOfBirth }}\n\n{{ $json.documentSide === 'back' ? 'BACK SIDE MODE: Only confirm this is the correct back side of the expected document type. Do NOT check name, DOB, or expiration. If correct back side: complianceEligibility=true, write userMessage confirming back side accepted (e.g. \"Back of [detected document name] accepted.\"). If front side submitted again: detectedSide=front, sideMatchesSelected=false, flag SIDE_MISMATCH severity CRITICAL, complianceEligibility=false. If back of wrong document type: documentTypeMatch=false, flag WRONG_LIST or WRONG_DOCUMENT, complianceEligibility=false. Always set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED. STRICT BACK-SIDE DISQUALIFIER RULES: Whenever documentSide is back, if the image shows a portrait/photo, full name, DOB, EXP/expiration, issue date, residential address, sex, height, eyes, or weight in the main identity layout, it is the FRONT side, not the back. Set detectedSide=front, sideMatchesSelected=false, add SIDE_MISMATCH severity CRITICAL, complianceEligibility=false, and ask user to upload the back side. For driver/state ID backs expect barcode/magnetic stripe/restrictions/donor/living will/instructions and usually no portrait. For passport card/PRC/EAD backs expect MRZ/barcode/security text and no portrait. Never accept a front-face identity layout as back.' : 'FRONT SIDE MODE: Full verification. UNIVERSAL SIDE DETECTION AND INFO CHECK RULES FOR ALL I-9 DOCUMENTS: Always use i9Context.expectedDocId and expectedDocLabel as source of truth, especially when selected gov type is unknown. First decide if the image is the expected front/back side. If front is expected but back is shown, set detectedSide=back, sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false, and do not continue with info checks. If back is expected but front is shown, set detectedSide=front, sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false, and do not continue with info checks. Apply document-specific field checks: name where visible on front; DOB only for docs that print DOB; expiration only for docs that print expiration; use NOT_CHECKED instead of hallucinating unavailable fields. List A front/back patterns: passport/photo bio page vs non-bio/endorsement pages; passport card photo front vs MRZ/barcode back; PRC/EAD photo front vs barcode/MRZ/security back. List B patterns: driver/state/school/military photo front vs barcode/magnetic/instruction back; voter registration info front vs instruction/mailing back. List C patterns: SSN/name front vs instruction/legal back; birth certificate certificate face vs blank/stamp/instruction back; I-197/tribal identity face vs instruction/security back. SOCIAL SECURITY CARD RULES: If expectedDocId is social_security_card or expected document contains Social Security Card, treat it as a List C Social Security Card even when selected gov type is unknown. Social Security Card front shows Social Security text, SSN, and worker name; it has no photo, no DOB, and no expiration, so do NOT hallucinate those fields. Set detectedDocumentType=social-security-card, detectedDocumentTypeLabel=Social Security Card, actualDocumentList=C. If front is expected but only back-side instruction/legal text is shown, set detectedSide=back, sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false. If back is expected but SSN/name/front face is shown, set detectedSide=front, sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false. For Social Security Card front, check name, set dobMatch.status=NOT_CHECKED, expirationStatus=NOT_CHECKED. If restriction text says VALID FOR WORK ONLY WITH DHS/INS AUTHORIZATION or NOT VALID FOR EMPLOYMENT, add STATUS_INELIGIBLE severity CRITICAL and complianceEligibility=false. CRITICAL SIDE CHECK FIRST: Before anything else, determine if the image shows the FRONT or BACK of a document. Signs of a BACK side include: a barcode (PDF417 or 2D), magnetic stripe, no portrait photo, class/endorsement codes, machine-readable text, or printed document numbers without a photo. If you determine the image is the BACK side but documentSide is front, you MUST immediately set detectedSide=back, sideMatchesSelected=false, add a SIDE_MISMATCH flag (severity CRITICAL), set complianceEligibility=false, and write userMessage: This appears to be the back side of the document. Please upload the front side instead. Do NOT proceed with name/DOB checks. If image does not contain a recognizable US identity document, set documentDetected=false, detectedDocumentType=unknown, complianceEligibility=false, userMessage explaining the document was not recognized. If the image contains watermarks, sample overlays, blankpsd.com, template text, or any sign it is a fake/edited/digital document: flag IMAGE_TAMPERING (severity CRITICAL), complianceEligibility=false, userMessage explaining it appears to be a sample or digitally altered document. Otherwise: detect document type and list, check for WRONG_LIST or WRONG_DOCUMENT, compare name and DOB to profile, check expiration, verify document allowed for immigration status. MANDATORY FLAG SEVERITY RULES: SIDE_MISMATCH, NAME_MISMATCH, DOB_MISMATCH, WRONG_LIST, WRONG_DOCUMENT, IMAGE_TAMPERING, DOCUMENT_EXPIRED, STATUS_INELIGIBLE, NO_DOCUMENT_DETECTED all MUST have severity=CRITICAL. FRONT SIDE complianceEligibility RULES: complianceEligibility=true ONLY when ALL of: documentDetected=true, sideMatchesSelected=true, listMatch=true, documentTypeMatch=true, nameMatch.status=MATCH (NOT NOT_CHECKED on front side — you MUST check name), dobMatch.status=MATCH (NOT NOT_CHECKED on front side — you MUST check DOB), not expired, documentAllowedForStatus=true, no IMAGE_TAMPERING, and ZERO CRITICAL flags. If ANY condition fails, complianceEligibility MUST be false. NAME/DOB CHECK IS MANDATORY ON FRONT SIDE: If name does not match profile (case-insensitive, ignore middle name, accept LAST FIRST order), set nameMatch.status=MISMATCH AND add NAME_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false. If DOB does not match (normalize to YYYY-MM-DD), set dobMatch.status=MISMATCH AND add DOB_MISMATCH flag (severity CRITICAL) AND set complianceEligibility=false. Write a specific userMessage based on actual findings — never copy example text.' }}\n\n\n\nDEDICATED DOCUMENT RULES FOR HIGH-RISK I-9 DOCUMENTS:\n\nBIRTH CERTIFICATE RULES (List C):\n- If expectedDocId is \"birth_certificate\" or expected document contains \"Birth Certificate\", treat expected document as a Birth Certificate even when selected gov type is \"unknown\".\n- detectedDocumentType MUST be \"birth-certificate\", detectedDocumentTypeLabel MUST be \"Birth Certificate\", actualDocumentList MUST be \"C\".\n- Birth Certificate front/certificate face normally contains child/person name, date of birth, place of birth, parent name(s), registrar/county/state seal, file/certificate number, and filed/issued dates.\n- Birth Certificates usually have NO portrait photo and NO expiration date. Do NOT hallucinate a photo or expiration. Set expirationStatus=\"NOT_CHECKED\" unless an actual expiration date is printed.\n- For Birth Certificate front/certificate face, check name and DOB when readable. If name or DOB differs from profile, add NAME_MISMATCH or DOB_MISMATCH severity CRITICAL and complianceEligibility=false.\n- Birth Certificate back may be blank or contain stamps, filing/legal text, certification notes, or official seals. If back is requested, only verify it is the back/official reverse of a birth certificate; set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If front is requested and the image is blank/back/stamp-only/instruction-only without the certificate face, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n\nSOCIAL SECURITY CARD RULES (List C):\n- If expectedDocId is \"social_security_card\" or expected document contains \"Social Security Card\", treat expected document as a Social Security Card even when selected gov type is \"unknown\".\n- detectedDocumentType MUST be \"social-security-card\", detectedDocumentTypeLabel MUST be \"Social Security Card\", actualDocumentList MUST be \"C\".\n- Social Security Card front normally shows \"Social Security\", a Social Security number, and worker name. It has NO photo, NO DOB, and NO expiration. Do NOT hallucinate DOB, photo, or expiration.\n- For Social Security Card front, check the worker name against profile. Set dobMatch.status=\"NOT_CHECKED\" and expirationStatus=\"NOT_CHECKED\".\n- Social Security Card back usually contains instructions, signature/legal text, and may not show SSN/name clearly. If back is requested, only verify side/type; set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If front is requested but only instruction/legal/signature text is shown, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- If back is requested but SSN/name/front face is shown, set detectedSide=\"front\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- For unrestricted Social Security Card, reject cards showing restrictions such as \"VALID FOR WORK ONLY WITH DHS AUTHORIZATION\", \"VALID FOR WORK ONLY WITH INS AUTHORIZATION\", or \"NOT VALID FOR EMPLOYMENT\" by adding STATUS_INELIGIBLE severity CRITICAL and complianceEligibility=false.\n\nPERMANENT RESIDENT CARD RULES (List A — Green Card):\n- If expectedDocId is \"permanent_resident_card\" or expected document contains \"Permanent Resident Card\" or \"Green Card\", treat expected document as a Permanent Resident Card.\n- detectedDocumentType MUST be \"permanent-resident-card\", detectedDocumentTypeLabel MUST be \"US Permanent Resident Card\", actualDocumentList MUST be \"A\".\n- PRC front normally has portrait/photo, name, USCIS/A-number, card/category code, country of birth, DOB, resident since date, card expiration, and security artwork.\n- PRC back normally has no portrait and contains MRZ lines, barcode/2D code, USCIS/security text, fingerprint/security area, or other reverse-side security features.\n- If front is requested, check name, DOB, document type, expiration, and documentAllowedForStatus. Extract A-number when visible. If profile/context contains a known A-number and visible card A-number differs, add DOCUMENT_NUMBER_MISMATCH severity CRITICAL and complianceEligibility=false.\n- If back is requested, do NOT re-check name, DOB, address, or expiration. Only verify correct back side/type and extract/cross-check A-number if visible. Set nameMatch=NOT_CHECKED, dobMatch=NOT_CHECKED, expirationStatus=NOT_CHECKED.\n- If back is requested but the image shows portrait/name/DOB/expiration/front layout, set detectedSide=\"front\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n- If front is requested but the image shows MRZ/barcode/security reverse with no portrait/front identity layout, set detectedSide=\"back\", sideMatchesSelected=false, SIDE_MISMATCH severity CRITICAL, complianceEligibility=false.\n\nSUPPORTED detectedDocumentType values:\n  drivers-license | state-id | passport | passport-card | permanent-resident-card | employment-authorization-card | military-id | school-id | voter-registration-card | social-security-card | birth-certificate | us-citizen-id-card | tribal-document | unknown\n\nRETURN THIS EXACT JSON STRUCTURE (fill all values based on the actual image — do NOT copy these placeholder values):\n{\n  \"documentDetected\": true,\n  \"detectedDocumentType\": \"<actual detected type>\",\n  \"detectedDocumentTypeLabel\": \"<human readable label of what you actually detected>\",\n  \"actualDocumentList\": \"<A, B, or C>\",\n  \"documentTypeMatch\": true,\n  \"listMatch\": true,\n  \"detectedSide\": \"<front or back — what you actually see in the image>\",\n  \"sideMatchesSelected\": true,\n  \"extractedFields\": {\n    \"first_name\": null, \"middle_name\": null, \"last_name\": null,\n    \"date_of_birth\": null, \"expiration_date\": null, \"issue_date\": null,\n    \"document_number\": null, \"address_line1\": null, \"city\": null, \"state\": null, \"zip\": null\n  },\n  \"validationResults\": {\n    \"nameMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"dobMatch\": { \"status\": \"NOT_CHECKED\", \"details\": null, \"userProvided\": \"\", \"documentExtracted\": \"\" },\n    \"addressMatch\": { \"status\": \"NOT_CHECKED\" },\n    \"expirationStatus\": \"NOT_CHECKED\",\n    \"photoIntegrity\": \"CLEAR\"\n  },\n  \"immigrationStatusCheck\": { \"documentAllowedForStatus\": true, \"reason\": null },\n  \"crossListMismatch\": { \"detected\": false, \"expectedList\": \"<expected list from context>\", \"actualList\": \"<actual list of detected doc>\", \"message\": null },\n  \"flags\": [],\n  \"complianceEligibility\": true,\n  \"nextAction\": \"CONTINUE\",\n  \"humanReviewRequired\": false,\n  \"reviewReason\": null,\n  \"userMessage\": \"<write a specific message based on verification result — never copy example text>\"\n}\n\nALL FLAGS EXCEPT IMAGE_QUALITY_LOW MUST HAVE severity=CRITICAL. NAME_MISMATCH and DOB_MISMATCH are ALWAYS CRITICAL — NEVER use WARNING or INFO for them.\nFLAG CODES: WRONG_LIST | WRONG_DOCUMENT | SIDE_MISMATCH | NAME_MISMATCH | DOB_MISMATCH | DOCUMENT_EXPIRED | STATUS_INELIGIBLE | IMAGE_QUALITY_LOW | NO_DOCUMENT_DETECTED | IMAGE_TAMPERING\nReturn ONLY strict JSON. No Markdown. No code fences. Never expose flag codes in userMessage.",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "6e97f6d5-d956-47c7-b1b3-3aaf9d3c9470",
+      "name": "Analyze I9 Document (Fallback)",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        3200,
+        2448
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "m4VCWj43BbfwQLJf",
+          "name": "Prod Ops Gemini Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const context = $('Prepare I9 Context').item.json;\nconst rawAnalysis = $input.first().json;\nconst i9 = context.i9Context || {};\n\nconsole.log('[I9-FORMAT] Raw keys: ' + Object.keys(rawAnalysis).join(', '));\nconsole.log('[I9-FORMAT] typeof text: ' + typeof rawAnalysis.text);\n\nfunction extractJSON(raw) {\n  if (raw.documentDetected !== undefined) return raw;\n  const candidates = [\n    raw.text,\n    raw.content?.parts?.[0]?.text,\n    raw.output_text,\n    typeof raw.message === 'string' ? raw.message : null\n  ];\n  for (const candidate of candidates) {\n    if (typeof candidate !== 'string') continue;\n    const cleaned = candidate.replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/i, '').trim();\n    console.log('[I9-PARSE] Trying candidate, first 200 chars: ' + cleaned.substring(0, 200));\n    try { return JSON.parse(cleaned); } catch(e) { console.log('[I9-PARSE] Failed: ' + e.message); }\n  }\n  return null;\n}\n\nfunction toFieldMatch(val) {\n  if (!val) return { status: 'NOT_CHECKED' };\n  if (typeof val === 'string') {\n    const s = val.toUpperCase();\n    return { status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED' };\n  }\n  if (typeof val === 'object') {\n    const s = String(val.status || 'NOT_CHECKED').toUpperCase();\n    return {\n      status: ['MATCH','MISMATCH','PARTIAL_MATCH','AMBIGUOUS','NOT_CHECKED'].includes(s) ? s : 'NOT_CHECKED',\n      details: val.details || null,\n      userProvided: val.userProvided || null,\n      documentExtracted: val.documentExtracted || null\n    };\n  }\n  return { status: 'NOT_CHECKED' };\n}\n\nfunction toFlag(f) {\n  if (typeof f === 'string') return { severity: 'CRITICAL', code: f, message: f.replace(/_/g, ' ').toLowerCase() };\n  return { severity: f.severity || 'CRITICAL', code: f.code || 'UNKNOWN', message: f.message || f.code || 'Unknown issue' };\n}\n\nconst a = extractJSON(rawAnalysis);\n\nif (!a) {\n  console.log('[I9-RESULT] PARSE FAILED — returning friendly error');\n  return [{ json: {\n    success: false, requestId: context.requestId, source: 'n8n-i9-gemini',\n    googleDriveFileId: context.googleDriveFileId || null,\n    userMessage: 'We could not verify this image automatically. Please retake the photo with good lighting and ensure the full document is visible.',\n    analysis: {\n      documentDetected: false, detectedDocumentType: 'unknown', detectedDocumentTypeLabel: 'Unknown',\n      documentTypeMatch: false, userSelectedType: context.selectedDocumentType || 'unknown',\n      userSelectedTypeLabel: 'Unknown', detectedSide: context.documentSide || 'front',\n      sideMatchesSelected: false, extractedFields: {},\n      validationResults: {\n        nameMatch: { status: 'NOT_CHECKED' }, dobMatch: { status: 'NOT_CHECKED' },\n        addressMatch: { status: 'NOT_CHECKED' }, expirationStatus: 'UNKNOWN', photoIntegrity: 'UNCLEAR'\n      },\n      flags: [{ severity: 'CRITICAL', code: 'ANALYSIS_FAILED', message: 'Document could not be read from the image.' }],\n      complianceEligibility: false, nextAction: 'RETAKE_PHOTO',\n      humanReviewRequired: true, reviewReason: 'Gemini response parse failure'\n    }\n  } }];\n}\n\nconsole.log('[I9-FORMAT] Parsed OK. documentDetected=' + a.documentDetected + ' detectedType=' + a.detectedDocumentType);\n\nconst vr = a.validationResults || {};\nconst ef = a.extractedFields || {};\nconst clm = a.crossListMismatch || {};\nconst isc = a.immigrationStatusCheck || {};\n\nlet flags = Array.isArray(a.flags) ? a.flags.map(toFlag) : [];\n\nif (clm.detected && !flags.some(f => f.code === 'WRONG_LIST')) {\n  flags.unshift({ severity: 'CRITICAL', code: 'WRONG_LIST', message: clm.message || 'Document belongs to a different I-9 list than expected.' });\n}\nif (a.documentTypeMatch === false && !flags.some(f => f.code === 'WRONG_DOCUMENT')) {\n  flags.unshift({ severity: 'CRITICAL', code: 'WRONG_DOCUMENT', message: 'You selected \"' + (i9.expectedDocLabel || '') + '\" but uploaded a different document.' });\n  console.log('[I9-SAFETY] Auto-injected CRITICAL WRONG_DOCUMENT flag');\n}\nif (isc.documentAllowedForStatus === false && !flags.some(f => f.code === 'STATUS_INELIGIBLE')) {\n  flags.unshift({ severity: 'CRITICAL', code: 'STATUS_INELIGIBLE', message: isc.reason || 'This document is not valid for your immigration status.' });\n}\n\n// SAFETY NET: auto-inject CRITICAL flags for name/DOB mismatch if model forgot\nconst nmStatus = (typeof vr.nameMatch === 'object' && vr.nameMatch ? vr.nameMatch.status : (typeof vr.nameMatch === 'string' ? vr.nameMatch : '')).toUpperCase();\nconst dbStatus = (typeof vr.dobMatch === 'object' && vr.dobMatch ? vr.dobMatch.status : (typeof vr.dobMatch === 'string' ? vr.dobMatch : '')).toUpperCase();\nif (nmStatus === 'MISMATCH' && !flags.some(f => f.code === 'NAME_MISMATCH')) {\n  flags.push({ severity: 'CRITICAL', code: 'NAME_MISMATCH', message: 'Name on document does not match profile.' });\n  console.log('[I9-SAFETY] Auto-injected CRITICAL NAME_MISMATCH flag');\n}\nif (dbStatus === 'MISMATCH' && !flags.some(f => f.code === 'DOB_MISMATCH')) {\n  flags.push({ severity: 'CRITICAL', code: 'DOB_MISMATCH', message: 'Date of birth on document does not match profile.' });\n  console.log('[I9-SAFETY] Auto-injected CRITICAL DOB_MISMATCH flag');\n}\n// SAFETY NET: side mismatch check\nconst expectedSide = context.documentSide || 'front';\nconst detectedSideForCheck = a.detectedSide || expectedSide;\nconst sideOk = a.sideMatchesSelected !== false && detectedSideForCheck === expectedSide;\nif (!sideOk && !flags.some(f => f.code === 'SIDE_MISMATCH')) {\n  flags.push({ severity: 'CRITICAL', code: 'SIDE_MISMATCH', message: 'Wrong side of document uploaded. Expected ' + (context.documentSide || 'front') + ' but detected ' + (a.detectedSide || 'back') + '.' });\n  console.log('[I9-SAFETY] Auto-injected CRITICAL SIDE_MISMATCH flag');\n}\n// Ensure existing critical-class flags are CRITICAL severity\nflags.forEach(f => { if ((f.code === 'NAME_MISMATCH' || f.code === 'DOB_MISMATCH' || f.code === 'IMAGE_TAMPERING' || f.code === 'SIDE_MISMATCH' || f.code === 'WRONG_DOCUMENT' || f.code === 'WRONG_LIST' || f.code === 'DOCUMENT_EXPIRED' || f.code === 'STATUS_INELIGIBLE') && f.severity !== 'CRITICAL') { console.log('[I9-SAFETY] Upgrading ' + f.code + ' from ' + f.severity + ' to CRITICAL'); f.severity = 'CRITICAL'; } });\n\nconst rawCompliance = typeof a.complianceEligibility === 'boolean' ? a.complianceEligibility : false;\n// Any CRITICAL flag OR validation mismatch OR side mismatch OR doc type mismatch must block\nconst hasCriticalFlag = flags.some(f => f.severity === 'CRITICAL');\nconst hasValidationMismatch = nmStatus === 'MISMATCH' || dbStatus === 'MISMATCH';\nconst docTypeOk = a.documentTypeMatch !== false;\nconst complianceEligibility = rawCompliance && !hasCriticalFlag && !hasValidationMismatch && sideOk && docTypeOk;\n\nconst labels = {\n  'drivers-license': \"US Driver's License\", 'state-id': 'US State ID Card',\n  'passport': 'US Passport', 'passport-card': 'US Passport Card',\n  'permanent-resident-card': 'US Permanent Resident Card',\n  'employment-authorization-card': 'US Employment Authorization Card',\n  'military-id': 'US Military ID', 'school-id': 'School ID', 'voter-registration-card': 'Voter Registration Card', 'social-security-card': 'Social Security Card', 'birth-certificate': 'Birth Certificate', 'us-citizen-id-card': 'U.S. Citizen ID Card', 'tribal-document': 'Native American Tribal Document', 'unknown': 'Unknown Document'\n};\n\nconst detectedType = a.detectedDocumentType || context.selectedDocumentType || 'unknown';\nconst selectedType = context.selectedDocumentType || 'unknown';\n\nconst normalizedAnalysis = {\n  documentDetected: Boolean(a.documentDetected),\n  userSelectedType: selectedType,\n  userSelectedTypeLabel: labels[selectedType] || selectedType,\n  detectedDocumentType: detectedType,\n  detectedDocumentTypeLabel: a.detectedDocumentTypeLabel || labels[detectedType] || detectedType,\n  documentTypeMatch: Boolean(a.documentTypeMatch),\n  detectedSide: a.detectedSide || context.documentSide || 'front',\n  sideMatchesSelected: Boolean(a.sideMatchesSelected !== false),\n  extractedFields: ef,\n  validationResults: {\n    nameMatch: toFieldMatch(vr.nameMatch),\n    dobMatch: toFieldMatch(vr.dobMatch),\n    addressMatch: toFieldMatch(vr.addressMatch || 'NOT_CHECKED'),\n    expirationStatus: vr.expirationStatus || 'UNKNOWN',\n    photoIntegrity: vr.photoIntegrity || 'CLEAR'\n  },\n  flags,\n  complianceEligibility,\n  nextAction: a.nextAction || (complianceEligibility ? 'CONTINUE' : 'HALT_VERIFICATION'),\n  humanReviewRequired: Boolean(a.humanReviewRequired ?? !complianceEligibility),\n  reviewReason: a.reviewReason || null\n};\n\nconsole.log('\\n======== I-9 VERIFICATION RESULT ========');\nconsole.log('[I9] request=' + context.requestId);\nconsole.log('[I9] immigration=' + i9.citizenshipStatus + ' expectedList=' + i9.expectedList + ' expectedDoc=' + i9.expectedDocLabel);\nconsole.log('[I9] detectedDoc=' + (a.detectedDocumentTypeLabel || '?') + ' actualList=' + (a.actualDocumentList || '?'));\nconsole.log('[I9] listMatch=' + a.listMatch + ' docMatch=' + a.documentTypeMatch);\nconsole.log('[I9] crossListMismatch=' + JSON.stringify(clm));\nconsole.log('[I9] statusCheck=' + JSON.stringify(isc));\nconsole.log('[I9] name=' + normalizedAnalysis.validationResults.nameMatch.status + ' dob=' + normalizedAnalysis.validationResults.dobMatch.status);\nconsole.log('[I9] compliance=' + complianceEligibility + ' action=' + normalizedAnalysis.nextAction);\nconsole.log('[I9] flags=' + JSON.stringify(flags));\nconsole.log('[I9] userMessage=' + (a.userMessage || 'none'));\nconsole.log('=========================================\\n');\n\n// Build a specific userMessage when safety net overrode Gemini's result\nlet finalMessage = a.userMessage || '';\nif (!complianceEligibility) {\n  const reasons = [];\n  if (!sideOk) {\n    const expectedSide = context.documentSide || 'front';\n    const detectedSide = a.detectedSide || (expectedSide === 'front' ? 'back' : 'front');\n    reasons.push('This appears to be the ' + detectedSide + ' side of the document. Please upload the ' + expectedSide + ' side instead.');\n  }\n  if (nmStatus === 'MISMATCH') reasons.push('The name on this document does not match your profile.');\n  if (dbStatus === 'MISMATCH') reasons.push('The date of birth on this document does not match your profile.');\n  if (flags.some(f => f.code === 'IMAGE_TAMPERING')) reasons.push('This document appears to be forged, altered, or a sample/template.');\n  if (flags.some(f => f.code === 'WRONG_LIST')) { const wl = flags.find(f => f.code === 'WRONG_LIST'); reasons.push(wl.message); }\n  if (flags.some(f => f.code === 'WRONG_DOCUMENT')) { const wd = flags.find(f => f.code === 'WRONG_DOCUMENT'); reasons.push(wd.message); }\n  if (flags.some(f => f.code === 'DOCUMENT_EXPIRED')) reasons.push('This document has expired.');\n  if (flags.some(f => f.code === 'NO_DOCUMENT_DETECTED')) reasons.push('No valid document was detected in this image.');\n  if (flags.some(f => f.code === 'STATUS_INELIGIBLE')) { const si = flags.find(f => f.code === 'STATUS_INELIGIBLE'); reasons.push(si.message); }\n  if (!docTypeOk && !flags.some(f => f.code === 'WRONG_DOCUMENT' || f.code === 'WRONG_LIST')) reasons.push('The uploaded document does not match the selected document type.');\n  if (reasons.length > 0) finalMessage = reasons.join(' ');\n  else if (!finalMessage) finalMessage = 'There was an issue verifying your document. Please try again.';\n}\nif (!finalMessage) finalMessage = 'Your document has been verified successfully.';\n\nreturn [{ json: {\n  success: true,\n  requestId: context.requestId,\n  source: 'n8n-i9-gemini',\n  googleDriveFileId: context.googleDriveFileId || null,\n  userMessage: finalMessage,\n  analysis: normalizedAnalysis\n} }];"
+      },
+      "id": "5e0c1e7e-f7ec-4a36-b0a7-e2d42649ce0b",
+      "name": "Format I9 Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        2208
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "51bc8a53-c8b5-471a-8bf7-63314398a584",
+      "name": "Respond I9 Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3424,
+        2208
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "I9 Verification Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate I9 Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate I9 Request": {
+      "main": [
+        [
+          {
+            "node": "Is I9 Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is I9 Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Convert I9 Image To Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Invalid I9 Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert I9 Image To Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload I9 Doc To Google Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload I9 Doc To Google Drive": {
+      "main": [
+        [
+          {
+            "node": "Prepare I9 Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare I9 Context": {
+      "main": [
+        [
+          {
+            "node": "Analyze I9 Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze I9 Document": {
+      "main": [
+        [
+          {
+            "node": "Format I9 Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare I9 Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare I9 Fallback": {
+      "main": [
+        [
+          {
+            "node": "Analyze I9 Document (Fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze I9 Document (Fallback)": {
+      "main": [
+        [
+          {
+            "node": "Format I9 Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format I9 Response": {
+      "main": [
+        [
+          {
+            "node": "Respond I9 Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "i9-v9-dedicated-birth-ssn-prc-rules-2026-05-11",
+  "meta": {
+    "instanceId": "5af3afb38f8674a00c025a9c92d12ea4b38dfe8e9127a5a712d25099414396a2"
+  },
+  "id": "i9DocVerificationDedicatedDocRules",
+  "tags": []
+}

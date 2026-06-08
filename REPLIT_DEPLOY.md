@@ -38,19 +38,33 @@ git push -u origin main
 
 ## Step 3 — Add Environment Variables (Secrets)
 
-The app needs these to connect to n8n for document verification.
+In your Repl, click the **Secrets** tab in the left sidebar (the lock icon 🔒) and add the
+keys below. The app will *run* with no secrets at all (it falls back to the Instawork
+production n8n webhooks), but set the **Recommended** ones for a clean, fully-working deploy.
 
-1. In your Repl, click the **Secrets** tab in the left sidebar (the lock icon 🔒).
-2. Add each secret one by one:
+### Recommended
 
-| Key | Value |
-|-----|-------|
-| `IDENTITY_VERIFICATION_SERVICE_URL` | `https://instawork.app.n8n.cloud/webhook/identity/verify-document` |
-| `I9_VERIFICATION_URL` | `https://instawork.app.n8n.cloud/webhook/i9/verify-document` |
-| `AUDIT_LOG_WEBHOOK_URL` | `https://instawork.app.n8n.cloud/webhook/audit-log` |
+| Key | Value | Why |
+|-----|-------|-----|
+| `ENABLE_PYTHON_OCR` | `false` | n8n is the primary verification path; skips the heavy Python build on Replit. |
+| `AUDIT_LOG_WEBHOOK_URL` | `https://instawork.app.n8n.cloud/webhook/audit-log` | Turns on audit logging to Google Sheets (off if unset). |
+| `AUDIT_LOG_WEBHOOK_SECRET` | _your shared secret_ | **Required if** you imported the audit workflow with the "Check Secret" node. Set the **same** value as an n8n Variable named `AUDIT_LOG_WEBHOOK_SECRET`, or the workflow returns 401. |
 
-> **Note:** `IDENTITY_VERIFICATION_SERVICE_SECRET` is optional. Only add it if your n8n webhook requires a shared secret header.
-> `AUDIT_LOG_WEBHOOK_SECRET` is optional. Only add it if your audit-log n8n workflow checks the `x-instawork-audit-secret` header.
+### Optional (set only to override defaults / enable extras)
+
+| Key | Value | Why |
+|-----|-------|-----|
+| `DOCUMENT_VALIDATION_SERVICE_URL` | `https://instawork.app.n8n.cloud/webhook/identity/verify-document` | Identity-doc verification webhook. Defaults to this if unset. |
+| `I9_VERIFICATION_URL` | `https://instawork.app.n8n.cloud/webhook/i9/verify-document` | I-9 verification webhook. Defaults to this if unset. |
+| `DOCUMENT_VALIDATION_SERVICE_SECRET` | _your shared secret_ | Only if your identity/I-9 n8n webhooks require the `x-instawork-identity-secret` header. |
+| `I9_VERIFICATION_SECRET` | _your shared secret_ | Only if the I-9 webhook needs a different secret than above (falls back to `DOCUMENT_VALIDATION_SERVICE_SECRET`). |
+| `INTERCOM_API_KEY` | _your Intercom key_ | Enriches audit rows with the contact's name + email (looked up by `?uid=` / `?email=` on the sim link). |
+
+### Do NOT set
+
+| Key | Why |
+|-----|-----|
+| `PORT` | Replit injects this automatically. Hard-coding it can break the public URL. |
 
 For audit logging, import `n8n/audit-log-google-sheets.workflow.json` into n8n, then replace:
 - `REPLACE_WITH_GOOGLE_SHEET_ID` with the Google Sheet ID that should receive rows.
@@ -63,12 +77,17 @@ Create a sheet tab named `audit_log`. The workflow auto-maps incoming row fields
 ## Step 4 — Run the App
 
 1. Click the green **Run** button at the top.
-2. Replit will automatically:
-   - Run `npm install` (installs all dependencies)
-   - Run `npm run build` (builds the React frontend into `dist/client/`)
-   - Run `npm start` (starts the Express server which serves both the API and the frontend)
+2. The `.replit` `run` command does everything automatically:
+   `npm install && npm run build && npm start`
+   - `npm install` — installs all dependencies
+   - `npm run build` — builds the React frontend into `dist/client/`
+   - `npm start` — starts the Express server, which serves both the API and the built frontend on `$PORT`
 3. A browser preview will open inside Replit showing the app.
 4. You can also open it in a full browser tab using the URL shown at the top of the preview panel.
+
+> **Published deployments** use the `[deployment]` config in `.replit`, which builds with
+> `npm install && npm run build` and serves with `npm start` — so the published site always
+> ships a freshly built frontend.
 
 ---
 
@@ -98,7 +117,7 @@ Share this URL with anyone who needs to test the simulation.
 - Run `npm install` in the Replit shell to reinstall dependencies.
 
 ### Document analysis returns errors / "Analysis failed"
-- Double-check that both Secrets (`IDENTITY_VERIFICATION_SERVICE_URL` and `I9_VERIFICATION_URL`) are set correctly in the Secrets panel.
+- Double-check that both Secrets (`DOCUMENT_VALIDATION_SERVICE_URL` and `I9_VERIFICATION_URL`) are set correctly in the Secrets panel.
 - Make sure the n8n workflows are **active** (not in test/paused mode) in your n8n dashboard.
 
 ### App works locally but not on Replit

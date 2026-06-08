@@ -10,7 +10,7 @@ The simulation should cover:
 
 - Initial app onboarding and identity capture.
 - Fetching the user's name from the initial app state.
-- W-2 Step 1: identity verification using a Persona-like ID scan simulation.
+- W-2 Step 1: document validation using a Persona-like ID scan simulation.
 - W-2 Step 2: profile confirmation for legal name, SSN, and DOB.
 - A review-and-confirm checkpoint before the user proceeds.
 - Document image validation through an n8n workflow that calls GPT using files uploaded from Google Drive.
@@ -115,13 +115,13 @@ The app should simulate the start of the Instawork Pro flow:
 
 The simulation can be linear and deterministic. The important requirement is that the user reaches the W-2 onboarding prompt with an initial identity state already present.
 
-### Stage 2 - W-2 Step 1: Identity Verification
+### Stage 2 - W-2 Step 1: Document Validation
 
-W-2 Step 1 simulates identity verification through Persona.
+W-2 Step 1 simulates document validation.
 
 The user should:
 
-1. Read the biometric consent screen.
+1. Read the simulation consent screen.
 2. Accept consent.
 3. Upload or capture a government ID.
 4. Complete a selfie/liveness simulation.
@@ -396,7 +396,7 @@ The app should detect:
 
 ### Step 1 and Step 2 Connection
 
-The app must not allow identity verification and profile confirmation to be disconnected.
+The app must not allow document validation and profile confirmation to be disconnected.
 
 Before WorkBright handoff, compare:
 
@@ -475,7 +475,7 @@ Deliverable:
 
 - User can reach W-2 onboarding with a stored initial name and DOB.
 
-### Milestone 3 - W-2 Step 1 Identity Verification
+### Milestone 3 - W-2 Step 1 Document Validation
 
 Build Persona-like simulation:
 
@@ -788,7 +788,7 @@ It documents the in-app user experience from profile creation through W-2 Step 1
 - The 23-screen Instawork onboarding and W-2 path.
 - The actual app-style screen names, copy, and branching notes.
 - The Profile tab W-2 prompt.
-- Persona biometric consent, government ID capture, selfie, liveness, and verification states.
+- Simulation consent, government ID capture, selfie, liveness, and verification states.
 - The "Verify Profile Details" screen.
 - The dedicated "Add Your SSN" screen.
 - The W-2 progress screen where Steps 1 and 2 become checked.
@@ -1054,34 +1054,34 @@ UI requirements:
 - Value props: more shifts from bigger partners, automatic tax withholding.
 - FAQ link.
 - Three-step W-2 progress explanation:
-  1. Complete identity verification.
+  1. Complete document validation.
   2. Confirm your profile information.
   3. Submit required forms and complete document verification.
 - Primary CTA: "Get started."
 
-### Phase F - W-2 Documentation Step 1: Identity Verification
+### Phase F - W-2 Documentation Step 1: Document Validation
 
-#### Step 12 - Biometric Consent Scroll
+#### Step 12 - Simulation Consent Scroll
 
 Purpose:
 
-- Simulate Persona biometric consent.
+- Explain that this is a simulation and that sensitive documents are not stored.
 
 UI requirements:
 
-- Persona-style screen.
+- App-style document validation screen.
 - "Verify your identity to start your W-2 process."
-- Biometric Information Notice and Consent.
-- Sections for collection, disclosure, retention, refusal, and revocation.
+- Simulation Consent.
+- Sections explaining the demo purpose, simulated document/selfie checks, and no sensitive document storage.
 - Language selector.
 - "Pass verifications" dev toggle may appear only in demo/admin mode.
-- Secured with Persona copy.
+- Simulation-only consent copy.
 
 Validation:
 
 - User must scroll before acceptance controls become clear.
 
-#### Step 13 - Biometric Consent Accept
+#### Step 13 - Simulation Consent Accept
 
 Purpose:
 
@@ -1096,7 +1096,7 @@ UI requirements:
 Branching:
 
 - Yes continues to government ID capture.
-- No blocks identity verification.
+- No blocks document validation.
 
 #### Step 14 - Government ID Camera Error
 
@@ -1201,7 +1201,7 @@ UI requirements:
 
 Purpose:
 
-- Simulate final identity verification.
+- Simulate final document validation.
 
 UI requirements:
 
@@ -1271,7 +1271,7 @@ Validation:
 
 Purpose:
 
-- Show that identity verification and profile confirmation are complete.
+- Show that document validation and profile confirmation are complete.
 
 UI requirements:
 

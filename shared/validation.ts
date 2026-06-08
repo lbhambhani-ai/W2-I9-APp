@@ -186,7 +186,9 @@ const GOVERNMENT_ID_TYPE_LABELS: Record<GovernmentIdType, string> = {
   "passport-card": "US Passport Card",
   "permanent-resident-card": "US Permanent Resident Card",
   "employment-authorization-card": "US Employment Authorization Card",
+  "foreign-passport-i94": "Foreign Passport with Form I-94",
   "military-id": "US Military ID",
+  "school-id": "School ID with Photograph",
   unknown: "Unsupported document"
 };
 
@@ -201,8 +203,50 @@ const DOCUMENT_TYPES_WITH_EXPIRATION = new Set<GovernmentIdType>([
   "passport",
   "passport-card",
   "permanent-resident-card",
+  "foreign-passport-i94",
   "employment-authorization-card"
 ]);
+
+const VENEZUELAN_PASSPORT_TYPES = new Set<GovernmentIdType>([
+  "passport",
+  "foreign-passport-i94"
+]);
+
+function isVenezuelanPassport(
+  detectedType: GovernmentIdType,
+  nationality?: string,
+  countryOfIssuance?: string
+): boolean {
+  if (!VENEZUELAN_PASSPORT_TYPES.has(detectedType)) return false;
+  const indicators = [nationality, countryOfIssuance].filter(Boolean).map(v => v!.toUpperCase().trim());
+  return indicators.some(v =>
+    v === "VEN" || v === "VENEZUELA" || v === "VENEZUELAN" ||
+    v.includes("VENEZUELA") || v.includes("BOLIVARIAN REPUBLIC OF VENEZUELA")
+  );
+}
+
+export const VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE =
+  "Since this is a Venezuelan passport, the expiry date will not be checked. Make sure your name and date of birth match those on your identity document to proceed.";
+
+export const I9_EXPIRY_EXCEPTION_MESSAGES = {
+  EAD_AUTO_EXTENSION:
+    "This Employment Authorization Document (Form I-766) has been auto-extended with a valid Form I-797C receipt notice. The printed expiry date on the card is not enforced.",
+  I551_EXTENSION_NOTICE:
+    "This Permanent Resident Card has been extended with a valid Form I-797 Notice of Action. The card's printed expiry date is not enforced.",
+  ADIT_STAMP_ACCEPTED:
+    "This foreign passport contains a valid temporary I-551/ADIT stamp confirming permanent resident status. The passport's own expiry date is not enforced for I-9 purposes.",
+  VENEZUELAN_PASSPORT_EXPIRY_BYPASS:
+    VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE,
+  RECEIPT_DOCUMENT_ACCEPTED:
+    "A valid receipt for a lost, stolen, or damaged document has been accepted. The actual replacement document must be presented within 90 days of the hire date."
+} as const;
+
+export type I9ExpiryExceptionCode =
+  | "EAD_AUTO_EXTENSION"
+  | "I551_EXTENSION_NOTICE"
+  | "ADIT_STAMP_ACCEPTED"
+  | "VENEZUELAN_PASSPORT_EXPIRY_BYPASS"
+  | "RECEIPT_DOCUMENT_ACCEPTED";
 
 const DOCUMENT_TYPES_REQUIRING_BACK = new Set<GovernmentIdType>([
   "drivers-license",
@@ -215,6 +259,15 @@ export function governmentIdTypeLabel(value: string): string {
     return GOVERNMENT_ID_TYPE_LABELS[value as GovernmentIdType];
   }
   return GOVERNMENT_ID_TYPE_LABELS.unknown;
+}
+
+function formatUserFacingDocumentLabel(label: string): string {
+  return label.replace(/^US\b/, "U.S.");
+}
+
+export function documentTypeMismatchMessage(selectedDocumentLabel: string): string {
+  const label = formatUserFacingDocumentLabel(selectedDocumentLabel || "document");
+  return `The uploaded document does not match the selected document type. You can change your selection to match what you uploaded, or upload a valid ${label}.`;
 }
 
 function ocrToGovernmentIdType(ocr: IdentityOcrResult): GovernmentIdType {
@@ -553,6 +606,8 @@ export type IdentityAnalysisInput = {
   expirationDate?: string;
   issueDate?: string;
   today?: Date;
+  nationality?: string;
+  countryOfIssuance?: string;
 };
 
 export function analyzeIdentityDocument(input: IdentityAnalysisInput): IdentityVerificationAnalysis {
@@ -601,7 +656,7 @@ export function analyzeIdentityDocument(input: IdentityAnalysisInput): IdentityV
     flags.push({
       severity: "CRITICAL",
       code: "DOCUMENT_TYPE_MISMATCH",
-      message: `DOCUMENT_TYPE_MISMATCH: User selected ${userSelectedLabel}, but image detects ${detectedLabel}. Verification halted.`
+      message: documentTypeMismatchMessage(userSelectedLabel)
     });
   }
 
@@ -643,7 +698,10 @@ export function analyzeIdentityDocument(input: IdentityAnalysisInput): IdentityV
   const nameMatch = compareNames(input.profile, input.ocr);
   const dobMatch = compareDob(input.profile, input.ocr);
   const addressMatch = compareAddress(detectedType, input.profile, input.documentAddress);
-  const expiration = expirationStatus(detectedType, input.expirationDate, today);
+  const venezuelanBypass = isVenezuelanPassport(detectedType, input.nationality, input.countryOfIssuance);
+  const expiration = venezuelanBypass
+    ? { status: "NOT_APPLICABLE" as const }
+    : expirationStatus(detectedType, input.expirationDate, today);
 
   if (documentTypeMatch) {
     if (nameMatch.status === "MISMATCH") {
@@ -676,7 +734,13 @@ export function analyzeIdentityDocument(input: IdentityAnalysisInput): IdentityV
       });
     }
 
-    if (expiration.status === "EXPIRED") {
+    if (venezuelanBypass) {
+      flags.push({
+        severity: "INFO",
+        code: "VENEZUELAN_PASSPORT_EXPIRY_BYPASS",
+        message: VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE
+      });
+    } else if (expiration.status === "EXPIRED") {
       flags.push({
         severity: "CRITICAL",
         code: "DOCUMENT_EXPIRED",

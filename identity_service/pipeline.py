@@ -2133,7 +2133,63 @@ def _append_name_and_dob_flags(analysis: dict[str, Any], extracted: dict[str, st
         analysis["flags"].append({"severity": "CRITICAL", "code": "DOB_NOT_EXTRACTED", "message": detail})
 
 
+VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE = (
+    "Since this is a Venezuelan passport, the expiry date will not be checked. "
+    "Make sure your name and date of birth match those on your identity document to proceed."
+)
+
+I9_EXPIRY_EXCEPTION_MESSAGES = {
+    "EAD_AUTO_EXTENSION": (
+        "This Employment Authorization Document (Form I-766) has been auto-extended "
+        "with a valid Form I-797C receipt notice. The printed expiry date on the card is not enforced."
+    ),
+    "I551_EXTENSION_NOTICE": (
+        "This Permanent Resident Card has been extended with a valid Form I-797 Notice of Action. "
+        "The card's printed expiry date is not enforced."
+    ),
+    "ADIT_STAMP_ACCEPTED": (
+        "This foreign passport contains a valid temporary I-551/ADIT stamp confirming permanent resident status. "
+        "The passport's own expiry date is not enforced for I-9 purposes."
+    ),
+    "RECEIPT_DOCUMENT_ACCEPTED": (
+        "A valid receipt for a lost, stolen, or damaged document has been accepted. "
+        "The actual replacement document must be presented within 90 days of the hire date."
+    ),
+}
+
+_VENEZUELAN_PASSPORT_TYPES = {"passport", "passport-card", "foreign-passport-i94"}
+
+
+def _is_venezuelan_passport(analysis: dict[str, Any], extracted: dict[str, str | None]) -> bool:
+    detected_type = analysis.get("detectedDocumentType", "")
+    if detected_type not in _VENEZUELAN_PASSPORT_TYPES:
+        return False
+    indicators = [
+        extracted.get("nationality"),
+        extracted.get("country_code"),
+        extracted.get("country_of_birth"),
+    ]
+    for value in indicators:
+        if not value:
+            continue
+        upper = value.upper().strip()
+        if upper in {"VEN", "VENEZUELA", "VENEZUELAN"} or "VENEZUELA" in upper:
+            return True
+    return False
+
+
 def _append_document_date_flags(analysis: dict[str, Any], extracted: dict[str, str | None], today: date | None = None) -> None:
+    if _is_venezuelan_passport(analysis, extracted):
+        analysis["validationResults"]["expirationStatus"] = "NOT_APPLICABLE"
+        analysis["flags"].append(
+            {
+                "severity": "INFO",
+                "code": "VENEZUELAN_PASSPORT_EXPIRY_BYPASS",
+                "message": VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE,
+            }
+        )
+        return
+
     current_date = today or date.today()
     expiration_value = extracted.get("expiration_date") or extracted.get("card_expires")
     issue_value = extracted.get("issue_date") or extracted.get("issued_date")
@@ -2213,6 +2269,12 @@ def _friendly_message(analysis: dict[str, Any]) -> str:
     critical_codes = {flag["code"] for flag in analysis["flags"] if flag["severity"] == "CRITICAL"}
     critical = next((flag for flag in analysis["flags"] if flag["severity"] == "CRITICAL"), None)
     if not critical:
+        venezuelan_flag = next((f for f in analysis["flags"] if f["code"] == "VENEZUELAN_PASSPORT_EXPIRY_BYPASS"), None)
+        if venezuelan_flag:
+            return VENEZUELAN_PASSPORT_EXPIRY_BYPASS_MESSAGE
+        for code, msg in I9_EXPIRY_EXCEPTION_MESSAGES.items():
+            if any(f["code"] == code for f in analysis["flags"]):
+                return msg
         return "This ID looks good and matches your profile."
     if critical["code"] == "SIDE_MISMATCH":
         return critical["message"]

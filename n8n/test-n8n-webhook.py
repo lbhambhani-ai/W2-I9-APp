@@ -1,5 +1,5 @@
 """
-n8n Identity Verification Webhook — Integration Test Runner
+n8n Document Validation Webhook — Integration Test Runner
 ============================================================
 Sends each test case to the live n8n webhook, validates the response shape,
 and prints a per-case pass/fail summary with a final score.
@@ -338,8 +338,10 @@ def evaluate_case(idx: int, case: Case) -> tuple[bool, str, dict]:
     chk("source=n8n-chatgpt-vision",
         response.get("source") in ("n8n-chatgpt-vision", "n8n-chatgpt-vision-v2"),
         "n8n-chatgpt-vision", str(response.get("source")))
-    chk("googleDriveFileId present",
-        bool(response.get("googleDriveFileId")))
+    chk("s3FileKey present",
+        bool(response.get("s3FileKey")))
+    chk("s3FileUrl present",
+        bool(response.get("s3FileUrl")))
 
     analysis = response.get("analysis", {})
     fields = analysis.get("extractedFields", {})
@@ -420,7 +422,7 @@ def evaluate_case(idx: int, case: Case) -> tuple[bool, str, dict]:
 
 def main() -> None:
     print("=" * 72)
-    print(f"N8N IDENTITY VERIFICATION WEBHOOK TEST  —  {len(CASES)} cases")
+    print(f"N8N DOCUMENT VALIDATION WEBHOOK TEST  —  {len(CASES)} cases")
     print(f"Webhook : {WEBHOOK_URL}")
     print(f"Timeout : {TIMEOUT}s per request")
     print(f"Assets  : {ASSETS_DIR}")

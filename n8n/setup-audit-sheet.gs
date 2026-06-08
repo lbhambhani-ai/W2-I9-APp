@@ -3,7 +3,7 @@
  * ============================================
  * Run this script once from inside your Google Sheet to:
  *   1. Create (or reset) the "audit_log" tab
- *   2. Write all 31 column headers
+ *   2. Write all 16 column headers (matches the n8n Normalize node output)
  *   3. Apply color-coded section backgrounds
  *   4. Bold + center-align headers, freeze row 1
  *   5. Set column widths
@@ -12,7 +12,7 @@
  *
  * HOW TO RUN:
  *   1. Open your Google Sheet:
- *      https://docs.google.com/spreadsheets/d/13ykmz2E-3fYnZOmMEDZAbFwuVSrOGSuKZmu1F8M13XQ/edit
+ *      https://docs.google.com/spreadsheets/d/19MM98YCU_Qtpz8YEXL6l6cHlQgVMNMAsbcDkA99e524/edit
  *   2. Click Extensions → Apps Script
  *   3. Paste this entire file into the editor (replace any existing code)
  *   4. Click ▶ Run → select "setupAuditLog"
@@ -22,63 +22,52 @@
  * Safe to re-run: it clears and rebuilds the header row without touching data rows.
  */
 
+// Target spreadsheet. Used so this works as a STANDALONE Apps Script project
+// (script.google.com) as well as one bound to the sheet.
+var AUDIT_SHEET_SPREADSHEET_ID = "19MM98YCU_Qtpz8YEXL6l6cHlQgVMNMAsbcDkA99e524";
 var TAB_NAME = "audit_log";
 
 // ── Column definitions ────────────────────────────────────────────────────────
 // Format: [header label, width in pixels, background hex color]
 // Colors group columns by section for easy reading.
+// One row per event, 16 columns, matching the n8n "Normalize Audit Row" output exactly.
 var COLUMNS = [
   // Section: Session / Meta — blue-grey
   ["Timestamp",            180, "#BDD7EE"],
+  ["Event",                150, "#BDD7EE"],
   ["Session ID",           220, "#BDD7EE"],
-  ["Record Kind",          120, "#BDD7EE"],
-  ["Flow",                 100, "#BDD7EE"],
-  ["Attempt #",             80, "#BDD7EE"],
-  ["Result",               110, "#BDD7EE"],
-  ["Side",                  80, "#BDD7EE"],
 
-  // Section: User Profile — light green
-  ["First Name",           130, "#C6EFCE"],
-  ["Last Name",            130, "#C6EFCE"],
-  ["Date of Birth",        130, "#C6EFCE"],
-  ["Email",                220, "#C6EFCE"],
-  ["Phone",                140, "#C6EFCE"],
+  // Section: User (name + email only) — light green
+  ["Name",                 200, "#C6EFCE"],
+  ["Email",                240, "#C6EFCE"],
 
-  // Section: Document Info — light yellow
-  ["Doc Type (Selected)",  180, "#FFEB9C"],
-  ["I-9 List",              80, "#FFEB9C"],
-  ["Doc ID",               160, "#FFEB9C"],
-  ["Doc Label",            200, "#FFEB9C"],
-  ["Immigration Status",   200, "#FFEB9C"],
-  ["Document Path",        200, "#FFEB9C"],
+  // Section: Attempt / Document — light yellow
+  ["Flow",                 100, "#FFEB9C"],
+  ["Attempt #",             80, "#FFEB9C"],
+  ["Result",               150, "#FFEB9C"],
+  ["Document",             220, "#FFEB9C"],
 
-  // Section: Google Drive — light purple
-  ["Drive File ID",        240, "#E2CFFF"],
-  ["Drive File URL",       300, "#E2CFFF"],
+  // Section: AWS S3 file — light purple
+  ["File Name",            200, "#E2CFFF"],
+  ["AWS File Location",    320, "#E2CFFF"],
+  ["AWS File URL",         360, "#E2CFFF"],
 
-  // Section: Analysis Output — light orange
-  ["User Message",         360, "#FCE4D6"],
-  ["Flags (JSON)",         300, "#FCE4D6"],
+  // Section: Status / Detail — light orange
+  ["Immigration Status",   180, "#FCE4D6"],
+  ["Details",              420, "#FCE4D6"],
 
-  // Section: Identity Verification Summary — light teal
-  ["ID Final Status",      140, "#DDEBF7"],
-  ["ID Attempt Count",     120, "#DDEBF7"],
-  ["ID Drive Links",       300, "#DDEBF7"],
-
-  // Section: I-9 Summary — light pink
-  ["I-9 Final Status",     140, "#F4CCCC"],
-  ["I-9 Attempt Count",    120, "#F4CCCC"],
-  ["I-9 Drive Links",      300, "#F4CCCC"],
-  ["I-9 Selected Docs",    300, "#F4CCCC"],
-
-  // Section: Feedback — light lavender
-  ["Rating (1–5)",         100, "#EAD1DC"],
-  ["Feedback Comments",    400, "#EAD1DC"]
+  // Section: Intercom — light lavender
+  ["Intercom User ID",     160, "#EAD1DC"],
+  ["Intercom Ticket ID",   150, "#EAD1DC"]
 ];
 
 // ── Main function — run this ──────────────────────────────────────────────────
 function setupAuditLog() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // openById works in both standalone and bound projects; fall back to the active
+  // spreadsheet when this script is bound to the sheet directly.
+  var ss = AUDIT_SHEET_SPREADSHEET_ID
+    ? SpreadsheetApp.openById(AUDIT_SHEET_SPREADSHEET_ID)
+    : SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(TAB_NAME);
 
   // Create the tab if it doesn't exist
@@ -149,19 +138,24 @@ function setupAuditLog() {
   // ── 9. Set default row height for data rows ───────────────────────────────
   sheet.setRowHeightsForced(2, sheet.getMaxRows() - 1, 24);
 
-  // ── 10. Make Drive File URL column show clickable links ───────────────────
-  // Column 20 = "Drive File URL" — format as plain text (links auto-detect)
-  sheet.getRange(2, 20, 1000, 1).setWrap(false);
+  // ── 10. Make AWS File URL column show clickable links ────────────────────
+  // Column 12 = "AWS File URL" — format as plain text (links auto-detect)
+  sheet.getRange(2, 12, 1000, 1).setWrap(false);
 
   Logger.log('✅ Audit log sheet setup complete!');
   Logger.log('Columns: ' + numCols);
-  Logger.log('Open: https://docs.google.com/spreadsheets/d/13ykmz2E-3fYnZOmMEDZAbFwuVSrOGSuKZmu1F8M13XQ/edit');
+  Logger.log('Open: https://docs.google.com/spreadsheets/d/19MM98YCU_Qtpz8YEXL6l6cHlQgVMNMAsbcDkA99e524/edit');
 
-  // Show a popup confirmation inside the sheet
-  SpreadsheetApp.getUi().alert(
-    '✅ Audit Log Setup Complete',
-    'The "' + TAB_NAME + '" tab has been set up with ' + numCols + ' columns.\n\n' +
-    'Import and activate the audit-log-google-sheets.workflow.json in n8n to start logging.',
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+  // Show a popup confirmation when bound to the sheet. getUi() is unavailable in a
+  // standalone project, so guard it — the Logger output above is the source of truth.
+  try {
+    SpreadsheetApp.getUi().alert(
+      '✅ Audit Log Setup Complete',
+      'The "' + TAB_NAME + '" tab has been set up with ' + numCols + ' columns.\n\n' +
+      'Import and activate the audit-log-google-sheets.workflow.json in n8n to start logging.',
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  } catch (e) {
+    Logger.log('(Standalone project — skipping UI alert.)');
+  }
 }

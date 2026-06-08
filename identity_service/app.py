@@ -23,7 +23,7 @@ class VerifyRequest(BaseModel):
     ocrText: str | None = None
 
 
-app = FastAPI(title="Instawork Identity Verification Service")
+app = FastAPI(title="Instawork Document Validation Service")
 
 
 @app.get("/health")

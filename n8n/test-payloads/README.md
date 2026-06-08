@@ -1,6 +1,6 @@
 # Test Payloads
 
-Each JSON file in this folder is a ready-to-use request body for the n8n identity verification webhook.
+Each JSON file in this folder is a ready-to-use request body for the n8n document validation webhook.
 
 ## How to use
 
