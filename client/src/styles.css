@@ -4869,3 +4869,131 @@ button:disabled {
   overflow: visible !important;
   overflow-y: visible !important;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Simulation consent — first-load pop-up
+   ═══════════════════════════════════════════════════════════ */
+.sim-consent-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1rem, 5vw, 1.75rem);
+  background: rgb(15 23 42 / 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: pe-fade 200ms ease-out both;
+}
+
+.sim-consent-card {
+  width: min(100%, 22rem);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: clamp(1.5rem, 5vw, 2rem) clamp(1.25rem, 5vw, 1.75rem);
+  background: #fff;
+  border: 1px solid #e7ecea;
+  border-radius: 1.25rem;
+  box-shadow: 0 1.5rem 3.5rem rgb(15 23 42 / 0.22);
+  animation: pe-card-rise 320ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.sim-consent-badge {
+  display: grid;
+  place-items: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 0.9rem;
+  background: #e7f5f0;
+  color: #0b8f72;
+  margin-bottom: 1rem;
+}
+
+.sim-consent-title {
+  margin: 0 0 1.25rem;
+  font-size: clamp(1.0625rem, 4.4vw, 1.25rem);
+  font-weight: 800;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: #14211c;
+}
+
+.sim-consent-list {
+  list-style: none;
+  margin: 0 0 1.125rem;
+  padding: 0;
+  display: grid;
+  gap: 0.9rem;
+  text-align: left;
+  width: 100%;
+}
+
+.sim-consent-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  color: #38433e;
+}
+
+.sim-consent-list strong {
+  color: #14211c;
+  font-weight: 700;
+}
+
+.sim-consent-ico {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #e7f5f0;
+  color: #0b8f72;
+}
+
+.sim-consent-fine {
+  margin: 0 0 1.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: #76817b;
+}
+
+.sim-consent-primary {
+  width: 100%;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.9rem 1.25rem;
+  background: #0b8f72;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease;
+}
+.sim-consent-primary:hover {
+  background: #097a61;
+}
+.sim-consent-primary:active {
+  transform: scale(0.98);
+}
+
+.sim-consent-skip {
+  margin-top: 0.75rem;
+  border: 0;
+  background: none;
+  padding: 0.5rem 0.75rem;
+  color: #0b8f72;
+  font-size: 0.9375rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.sim-consent-skip:hover {
+  text-decoration: underline;
+}

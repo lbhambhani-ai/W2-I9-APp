@@ -355,6 +355,14 @@ export function App() {
     if (directStep !== null) return parseInt(directStep, 10);
     return 0;
   });
+  // Simulation consent — shown only on a clean first load (not when deep-linking
+  // to a specific screen/step or capturing screenshots).
+  const [consentOpen, setConsentOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (fullCapture) return false;
+    if (directScreen || directStep !== null) return false;
+    return true;
+  });
   const [identity, setIdentity] = useState<InitialIdentity>(defaultIdentity);
   const [profile, setProfile] = useState<ConfirmedW2Profile>(defaultProfile);
   const [selfieImage, setSelfieImage] = useState<string | null>(null);
@@ -569,7 +577,57 @@ export function App() {
         onAuditAttempt={recordAuditAttempt}
         onJumpToW2={() => setStep(onboardingScreens.length - 1)}
       />
+      {consentOpen && (
+        <SimulationConsentModal
+          onAccept={() => setConsentOpen(false)}
+          onDecline={() => {
+            window.location.href = "https://www.google.com";
+          }}
+        />
+      )}
     </OnboardingShell>
+  );
+}
+
+function SimulationConsentModal({ onAccept, onDecline }: { onAccept: () => void; onDecline: () => void }) {
+  return (
+    <div className="sim-consent-backdrop" role="dialog" aria-modal="true" aria-labelledby="sim-consent-title">
+      <div className="sim-consent-card">
+        <div className="sim-consent-badge" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 3 4 6v6c0 4.4 3.1 7.6 8 9 4.9-1.4 8-4.6 8-9V6l-8-3Z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </div>
+        <h2 id="sim-consent-title" className="sim-consent-title">
+          Your real-time W-2 onboarding walkthrough
+        </h2>
+        <ul className="sim-consent-list">
+          <li>
+            <span className="sim-consent-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 5a2 2 0 0 1 2-2h9v15H6a2 2 0 0 0-2 2V5Z" />
+                <path d="M15 3h3a2 2 0 0 1 2 2v15a2 2 0 0 0-2-2h-3" />
+              </svg>
+            </span>
+            <span>A hands-on walkthrough of Instawork&rsquo;s <strong>W-2 onboarding and I-9 verification</strong>, with real-time feedback to help you complete each step.</span>
+          </li>
+          <li>
+            <span className="sim-consent-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 11v5" />
+                <path d="M12 8h.01" />
+              </svg>
+            </span>
+            <span>It&rsquo;s here to <strong>help you learn the process</strong> — it doesn&rsquo;t replace your official onboarding.</span>
+          </li>
+        </ul>
+        <p className="sim-consent-fine">By continuing, you agree to take part in this real-time W-2 onboarding simulation built to help you understand the process. You can stop anytime. If you decline, you&rsquo;ll leave the walkthrough.</p>
+        <button type="button" className="sim-consent-primary" onClick={onAccept}>Accept &amp; continue</button>
+        <button type="button" className="sim-consent-skip" onClick={onDecline}>Decline</button>
+      </div>
+    </div>
   );
 }
 

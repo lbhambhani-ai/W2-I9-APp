@@ -6,10 +6,11 @@ __pycache__/
 # Build output
 # dist/ — included for Replit deployment (no build step needed)
 
-# Environment variables
+# Environment variables & secrets — never commit
 .env
 .env.local
 .env.*.local
+replit-secrets.json
 
 # Editor / OS
 .DS_Store
