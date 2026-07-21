@@ -1,9 +1,26 @@
 import { createServer } from "./app";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const port = Number(process.env.PORT || 3001);
+
+// ── Express server ────────────────────────────────────────────────────────────
+// Bind the port FIRST. Deployment healthchecks hit "/", so the server must accept
+// connections immediately — before any slow/optional startup work (e.g. the Python
+// OCR sidecar, which scans the Nix store and can take ~30s on Replit). Doing that
+// work before listen() is what made healthchecks fail with 500 during startup.
+const server = createServer().listen(port, "0.0.0.0", () => {
+  console.log(`Instawork W-2 simulation API listening on ${port}`);
+  if (process.env.ENABLE_PYTHON_OCR !== "false") {
+    // Defer so the listen callback returns and the event loop stays responsive.
+    setImmediate(startPythonOcrSidecar);
+  }
+});
+
+server.setTimeout(0);
+server.keepAliveTimeout = 0;
+server.headersTimeout = 0;
 
 // ── Python OCR sidecar ────────────────────────────────────────────────────────
 // Start the FastAPI identity service on port 8001 as a background process.
@@ -23,10 +40,30 @@ function startPythonOcrSidecar() {
     : "python3";
 
   const ocrPort = process.env.PYTHON_OCR_PORT || "8001";
-  const libstdcxxLookup = spawnSync("sh", ["-lc", "dirname \"$(find /nix/store -name libstdc++.so.6 2>/dev/null | head -n 1)\""], {
-    encoding: "utf8"
-  });
-  const libstdcxxDir = libstdcxxLookup.stdout.trim();
+
+  // Resolve libstdc++ asynchronously — scanning /nix/store can take many seconds
+  // and must never block the event loop or delay request handling.
+  const finder = spawn("sh", [
+    "-lc",
+    "dirname \"$(find /nix/store -name libstdc++.so.6 2>/dev/null | head -n 1)\""
+  ]);
+  let libDirOut = "";
+  finder.stdout?.on("data", (data: Buffer) => { libDirOut += data.toString(); });
+
+  // A failed spawn emits BOTH 'error' and (afterwards) 'close', so guard against
+  // launching the sidecar twice on the same port. Launch exactly once, on whichever
+  // fires first: 'error' → fall back to no libstdc++ dir, 'close' → use what we found.
+  let launched = false;
+  const startOnce = (libstdcxxDir: string) => {
+    if (launched) return;
+    launched = true;
+    launchUvicorn(pythonBin, ocrPort, libstdcxxDir);
+  };
+  finder.on("error", () => startOnce(""));
+  finder.on("close", () => startOnce(libDirOut.trim()));
+}
+
+function launchUvicorn(pythonBin: string, ocrPort: string, libstdcxxDir: string) {
   const sidecarEnv = {
     ...process.env,
     PYTHONUNBUFFERED: "1",
@@ -67,7 +104,7 @@ function startPythonOcrSidecar() {
     console.warn("[python-ocr] Document validation will use n8n only.");
   });
 
-  proc.on("exit", (code, signal) => {
+  proc.on("exit", (code) => {
     if (code !== 0 && code !== null) {
       console.warn(`[python-ocr] Sidecar exited with code ${code} — n8n remains the primary path.`);
     }
@@ -76,7 +113,7 @@ function startPythonOcrSidecar() {
   // Give uvicorn a moment to boot, then confirm it's reachable
   setTimeout(async () => {
     try {
-      const res = await fetch("http://localhost:8001/health");
+      const res = await fetch(`http://localhost:${ocrPort}/health`);
       if (res.ok) {
         console.log("[python-ocr] Sidecar is healthy ✓");
       }
@@ -85,16 +122,3 @@ function startPythonOcrSidecar() {
     }
   }, 5000);
 }
-
-if (process.env.ENABLE_PYTHON_OCR !== "false") {
-  startPythonOcrSidecar();
-}
-
-// ── Express server ────────────────────────────────────────────────────────────
-const server = createServer().listen(port, "0.0.0.0", () => {
-  console.log(`Instawork W-2 simulation API listening on ${port}`);
-});
-
-server.setTimeout(0);
-server.keepAliveTimeout = 0;
-server.headersTimeout = 0;
