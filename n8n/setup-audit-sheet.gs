@@ -3,7 +3,7 @@
  * ============================================
  * Run this script once from inside your Google Sheet to:
  *   1. Create (or reset) the "audit_log" tab
- *   2. Write all 16 column headers (matches the n8n Normalize node output)
+ *   2. Write all 17 column headers (matches the n8n Normalize node output)
  *   3. Apply color-coded section backgrounds
  *   4. Bold + center-align headers, freeze row 1
  *   5. Set column widths
@@ -30,7 +30,7 @@ var TAB_NAME = "audit_log";
 // ── Column definitions ────────────────────────────────────────────────────────
 // Format: [header label, width in pixels, background hex color]
 // Colors group columns by section for easy reading.
-// One row per event, 16 columns, matching the n8n "Normalize Audit Row" output exactly.
+// One row per event, 17 columns, matching the n8n "Normalize Audit Row" output exactly.
 var COLUMNS = [
   // Section: Session / Meta — blue-grey
   ["Timestamp",            180, "#BDD7EE"],
@@ -55,6 +55,7 @@ var COLUMNS = [
   // Section: Status / Detail — light orange
   ["Immigration Status",   180, "#FCE4D6"],
   ["Details",              420, "#FCE4D6"],
+  ["Address",              320, "#FCE4D6"],
 
   // Section: Intercom — light lavender
   ["Intercom User ID",     160, "#EAD1DC"],

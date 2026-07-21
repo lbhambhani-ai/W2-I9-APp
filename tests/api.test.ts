@@ -183,6 +183,49 @@ describe("API", () => {
     expect(JSON.stringify(forwardedSummary)).not.toContain("555");
   });
 
+  it("forwards the residential address to the audit webhook when provided", async () => {
+    process.env.AUDIT_LOG_WEBHOOK_URL = "https://example.test/webhook/audit-log";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ logged: true })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await request(app)
+      .post("/api/audit-log")
+      .send({
+        recordKind: "attempt",
+        sessionId: "session-1",
+        timestamp: "2026-05-07T00:00:00.000Z",
+        flow: "identity",
+        attemptNumber: 1,
+        side: "front",
+        selectedDocumentType: "drivers-license",
+        resultStatus: "pass",
+        userMessage: "Verified",
+        profile: {
+          legalFirstName: "Lakshya",
+          legalLastName: "Bhambhani",
+          dateOfBirth: "2003-09-17",
+          email: "lakshya@example.com",
+          phone: "+1 555 010 9999",
+          residentialAddress: "895 Main St, Apt 12B, San Francisco, CA 94105"
+        }
+      })
+      .expect(200);
+
+    const forwarded = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body);
+    expect(forwarded.profile).toEqual({
+      legalFirstName: "Lakshya",
+      legalLastName: "Bhambhani",
+      email: "lakshya@example.com",
+      residentialAddress: "895 Main St, Apt 12B, San Francisco, CA 94105"
+    });
+    // DOB and phone are still stripped even alongside the address.
+    expect(JSON.stringify(forwarded)).not.toContain("2003-09-17");
+    expect(JSON.stringify(forwarded)).not.toContain("555");
+  });
+
   it("forwards audit events to the configured n8n webhook", async () => {
     process.env.AUDIT_LOG_WEBHOOK_URL = "https://example.test/webhook/audit-log";
     process.env.AUDIT_LOG_WEBHOOK_SECRET = "audit-secret";

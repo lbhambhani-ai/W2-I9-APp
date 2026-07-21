@@ -65,12 +65,20 @@ async function reachW2Prompt() {
   await userEvent.type(screen.getByRole("textbox", { name: "Phone number" }), "+1 555 100 2000");
   await userEvent.click(screen.getByRole("button", { name: "Next" }));
 
-  // Step 3: W-2 Onboarding Prompt — we are now here
+  // Step 3: Residential address
+  await userEvent.type(screen.getByRole("textbox", { name: "Search residential address" }), "895 Main");
+  const addressOption = await screen.findByRole("option", {
+    name: "895 Main St, San Francisco, CA 94105, USA"
+  });
+  await userEvent.click(addressOption);
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+
+  // Step 4: W-2 Onboarding Prompt — we are now here
 }
 
 async function reachIdentityVerification() {
   await reachIdentityVerificationConsent();
-  // Step 5: Document Validation Consent
+  // Step 6: Document Validation Consent
   await userEvent.click(screen.getByRole("radio", { name: "Yes" }));
   await userEvent.click(screen.getByRole("button", { name: "Begin verifying" }));
   // Step 6: Government ID Upload
@@ -78,9 +86,9 @@ async function reachIdentityVerification() {
 
 async function reachIdentityVerificationConsent() {
   await reachW2Prompt();
-  // Step 3: W-2 Onboarding Prompt
+  // Step 4: W-2 Onboarding Prompt
   await userEvent.click(screen.getByRole("button", { name: "Start onboarding" }));
-  // Step 4: W-2 Documentation Intro
+  // Step 5: W-2 Documentation Intro
   await userEvent.click(screen.getByRole("button", { name: "Get started" }));
 }
 

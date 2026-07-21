@@ -25,7 +25,7 @@ TAB_NAME = "audit_log"
 
 # ── Column definitions ─────────────────────────────────────────────────────────
 # Each entry: (header_label, width_pixels, section_color_hex)
-# One row per event, 16 columns, matching the n8n "Normalize Audit Row" output.
+# One row per event, 17 columns, matching the n8n "Normalize Audit Row" output.
 
 COLUMNS = [
     # ── Session / Meta (light blue-grey) ──────────────────────────────────────
@@ -51,6 +51,7 @@ COLUMNS = [
     # ── Status / Detail (light orange) ────────────────────────────────────────
     ("Immigration Status",     180, "FCE4D6"),
     ("Details",                420, "FCE4D6"),
+    ("Address",                320, "FCE4D6"),
 
     # ── Intercom (light lavender) ──────────────────────────────────────────────
     ("Intercom User ID",       160, "EAD1DC"),
@@ -76,6 +77,7 @@ N8N_FIELD_MAP = {
     "AWS File URL":        "AWS File URL",
     "Immigration Status":  "Immigration Status",
     "Details":             "Details",
+    "Address":             "Address",
     "Intercom User ID":    "Intercom User ID",
     "Intercom Ticket ID":  "Intercom Ticket ID",
 }
@@ -252,8 +254,8 @@ def print_manual_instructions():
     print("  Cols  4-5  (D-E)  : User (name+email) → Green    #C6EFCE")
     print("  Cols  6-9  (F-I)  : Attempt/Document → Yellow    #FFEB9C")
     print("  Cols 10-12 (J-L)  : AWS S3 File    → Purple     #E2CFFF")
-    print("  Cols 13-14 (M-N)  : Status/Detail  → Orange     #FCE4D6")
-    print("  Cols 15-16 (O-P)  : Intercom       → Lavender   #EAD1DC")
+    print("  Cols 13-15 (M-O)  : Status/Detail/Address → Orange #FCE4D6")
+    print("  Cols 16-17 (P-Q)  : Intercom       → Lavender   #EAD1DC")
 
 
 if __name__ == "__main__":

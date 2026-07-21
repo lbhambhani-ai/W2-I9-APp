@@ -19,6 +19,10 @@ import type {
 } from "../shared/types";
 import { s3FileUrlFromKey } from "../shared/audit";
 
+// Per-attempt ceiling for calls out to n8n. A normal Gemini-vision round trip is ~20-40s;
+// this bounds a stalled/half-open socket so the backend always responds to the client.
+const N8N_FETCH_TIMEOUT_MS = 60000;
+
 function normalizeFieldComparison(val: unknown): IdentityFieldComparison {
   const validStatuses = ["MATCH", "MISMATCH", "PARTIAL_MATCH", "AMBIGUOUS", "NOT_CHECKED"] as const;
   type ValidStatus = (typeof validStatuses)[number];
@@ -181,12 +185,13 @@ function isAuditLogEvent(value: unknown): value is AuditLogEvent {
   return false;
 }
 
-// Keep only the name + email fields the audit sheet needs. Drops DOB, phone, SSN, address, etc.
+// Keep only the fields the audit sheet needs: name, email, and residential address.
+// Drops DOB, phone, SSN, and any other PII.
 function sanitizeProfile(profile: unknown): Record<string, unknown> | undefined {
   if (!profile || typeof profile !== "object") return undefined;
   const source = profile as Record<string, unknown>;
   const clean: Record<string, unknown> = {};
-  for (const key of ["legalFirstName", "legalLastName", "firstName", "lastName", "email"]) {
+  for (const key of ["legalFirstName", "legalLastName", "firstName", "lastName", "email", "residentialAddress"]) {
     if (typeof source[key] === "string" && source[key]) clean[key] = source[key];
   }
   return Object.keys(clean).length ? clean : undefined;
@@ -308,7 +313,9 @@ export function createServer() {
               ? { "x-instawork-identity-secret": identityVerificationSecret }
               : {})
           },
-          body: JSON.stringify(input)
+          body: JSON.stringify(input),
+          // Bound the wait: a stalled/half-open n8n socket must never hang the request forever.
+          signal: AbortSignal.timeout(N8N_FETCH_TIMEOUT_MS)
         });
 
         if (!verifierResponse.ok) {
@@ -417,7 +424,9 @@ export function createServer() {
             documentDetectedInFrame: body.documentDetectedInFrame ?? true,
             profile,
             i9Context: i9Context || {}
-          })
+          }),
+          // Bound the wait: a stalled/half-open n8n socket must never hang the request forever.
+          signal: AbortSignal.timeout(N8N_FETCH_TIMEOUT_MS)
         });
 
         if (!n8nResponse.ok) {

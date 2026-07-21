@@ -50,34 +50,53 @@ const MEDIAPIPE_FACE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite";
 const FACE_DETECTION_INTERVAL_MS = 100;
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const ADDRESS_SUGGESTIONS = [
+type AddressSuggestion = {
+  address: string;
+  city: string;
+  lat?: number;
+  lon?: number;
+};
+
+const DEFAULT_MAP_CENTER = { lat: 37.7749, lon: -122.4194 };
+
+const ADDRESS_SUGGESTIONS: AddressSuggestion[] = [
   {
     address: "895 Main St, San Francisco, CA 94105, USA",
-    city: "San Francisco"
+    city: "San Francisco",
+    lat: 37.7897,
+    lon: -122.3942
   },
   {
     address: "895 Market St, San Francisco, CA 94103, USA",
-    city: "San Francisco"
+    city: "San Francisco",
+    lat: 37.7845,
+    lon: -122.4072
   },
   {
     address: "895 Main St, Redwood City, CA 94063, USA",
-    city: "Redwood City"
+    city: "Redwood City",
+    lat: 37.4852,
+    lon: -122.2364
   },
   {
     address: "123 Market St, San Francisco, CA 94105, USA",
-    city: "San Francisco"
+    city: "San Francisco",
+    lat: 37.7936,
+    lon: -122.3966
   },
   {
     address: "1 Ferry Building, San Francisco, CA 94111, USA",
-    city: "San Francisco"
+    city: "San Francisco",
+    lat: 37.7955,
+    lon: -122.3937
   }
 ];
-type AddressSuggestion = (typeof ADDRESS_SUGGESTIONS)[number];
 
 const onboardingScreens = [
   "Profile Photo",
   "Camera / Selfie",
   "Date of Birth",
+  "Where do you live?",
   "W-2 Onboarding Prompt",
   "W-2 Intro",
   "Document Validation",
@@ -308,14 +327,20 @@ function postAuditEvent(event: AuditLogEvent) {
   });
 }
 
-function auditProfileSnapshot(identity: InitialIdentity, profile: ConfirmedW2Profile): AuditUserSnapshot {
-  // Privacy: only name + email are retained in the audit log. DOB / phone are intentionally omitted.
+function auditProfileSnapshot(
+  identity: InitialIdentity,
+  profile: ConfirmedW2Profile,
+  residentialAddress = ""
+): AuditUserSnapshot {
+  // Privacy: only name, email, and residential address are retained in the audit log.
+  // DOB / phone are intentionally omitted.
   return {
     firstName: identity.firstName,
     lastName: identity.lastName,
     legalFirstName: profile.legalFirstName || identity.firstName,
     legalLastName: profile.legalLastName || identity.lastName,
-    email: profile.email || identity.email
+    email: profile.email || identity.email,
+    residentialAddress: residentialAddress.trim() || undefined
   };
 }
 
@@ -365,6 +390,7 @@ export function App() {
   });
   const [identity, setIdentity] = useState<InitialIdentity>(defaultIdentity);
   const [profile, setProfile] = useState<ConfirmedW2Profile>(defaultProfile);
+  const [residentialAddress, setResidentialAddress] = useState("");
   const [selfieImage, setSelfieImage] = useState<string | null>(null);
   const [w2Validation, setW2Validation] = useState<ValidationResult | null>(null);
   const directWbStep = typeof window !== "undefined"
@@ -472,7 +498,7 @@ export function App() {
       sessionId,
       timestamp: new Date().toISOString(),
       attemptNumber: auditAttemptCountsRef.current[input.flow],
-      profile: auditProfileSnapshot(identity, profile),
+      profile: auditProfileSnapshot(identity, profile, residentialAddress),
       ...input
     };
     setAuditAttempts((current) => [...current, event]);
@@ -486,7 +512,7 @@ export function App() {
       recordKind: "summary",
       sessionId,
       timestamp: new Date().toISOString(),
-      profile: auditProfileSnapshot(identity, profile),
+      profile: auditProfileSnapshot(identity, profile, residentialAddress),
       identity: identitySummary,
       i9: {
         ...i9Summary,
@@ -568,8 +594,10 @@ export function App() {
         identity={identity}
         profile={profile}
         selfieImage={selfieImage}
+        residentialAddress={residentialAddress}
         onIdentityChange={updateIdentity}
         onProfileChange={updateProfile}
+        onAddressChange={setResidentialAddress}
         onSelfieCapture={setSelfieImage}
         onNext={() => setStep((current) => Math.min(current + 1, onboardingScreens.length - 1))}
         onBack={() => setStep((current) => Math.max(current - 1, 0))}
@@ -677,8 +705,10 @@ function InstaworkOnboardingScreen({
   identity,
   profile,
   selfieImage,
+  residentialAddress,
   onIdentityChange,
   onProfileChange,
+  onAddressChange,
   onSelfieCapture,
   onNext,
   onBack,
@@ -690,8 +720,10 @@ function InstaworkOnboardingScreen({
   identity: InitialIdentity;
   profile: ConfirmedW2Profile;
   selfieImage: string | null;
+  residentialAddress: string;
   onIdentityChange: (field: keyof InitialIdentity, value: string) => void;
   onProfileChange: (field: keyof ConfirmedW2Profile, value: string) => void;
+  onAddressChange: (value: string) => void;
   onSelfieCapture: (imageDataUrl: string) => void;
   onNext: () => void;
   onBack: () => void;
@@ -734,15 +766,25 @@ function InstaworkOnboardingScreen({
     );
   }
   if (step === 3) {
-    return <W2OnboardingPromptScreen onNext={onNext} />;
+    return (
+      <LocationScreen
+        address={residentialAddress}
+        onChange={onAddressChange}
+        onNext={onNext}
+        onBack={onBack}
+      />
+    );
   }
   if (step === 4) {
-    return <W2DocumentationIntroScreen onNext={onNext} onBack={onBack} />;
+    return <W2OnboardingPromptScreen onNext={onNext} />;
   }
   if (step === 5) {
-    return <IdentityVerificationConsentScreen onNext={onNext} onBack={onBack} />;
+    return <W2DocumentationIntroScreen onNext={onNext} onBack={onBack} />;
   }
   if (step === 6) {
+    return <IdentityVerificationConsentScreen onNext={onNext} onBack={onBack} />;
+  }
+  if (step === 7) {
     return <GovernmentIdUploadVerificationScreen profile={profile} onNext={onNext} onBack={onBack} onSaveProfileCorrection={onSaveIdentityProfileCorrection} onAuditAttempt={onAuditAttempt} />;
   }
   return (
@@ -1325,6 +1367,7 @@ function deriveHubItems(
       detail: NAME_MISMATCH_GUIDANCE,
       status: hasExpired ? "pending" : "failed",
       action: !hasExpired ? { label: "Fix my profile", handler: handlers.onFixProfile } : undefined,
+      secondaryAction: !hasExpired ? { label: "Upload a different document", handler: handlers.onRetake } : undefined,
     });
   }
 
@@ -1335,6 +1378,7 @@ function deriveHubItems(
       detail: DOB_MISMATCH_GUIDANCE,
       status: hasExpired ? "pending" : "failed",
       action: !hasExpired ? { label: "Fix my profile", handler: handlers.onFixProfile } : undefined,
+      secondaryAction: !hasExpired ? { label: "Upload a different document", handler: handlers.onRetake } : undefined,
     });
   }
 
@@ -1927,17 +1971,13 @@ export function GovernmentIdUploadVerificationScreen({
         ...(isPRC && side === "back" && extractedANumber ? { aNumber: extractedANumber } : {})
       };
 
-      const response = await fetch("/api/identity-verification/analyze", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          requestId: `identity_${side}_${Date.now()}`,
-          imageBase64,
-          selectedDocumentType: effectiveType,
-          documentSide: side,
-          documentDetectedInFrame: true,
-          profile: profilePayload
-        })
+      const response = await postAnalyzeRequest("/api/identity-verification/analyze", {
+        requestId: `identity_${side}_${Date.now()}`,
+        imageBase64,
+        selectedDocumentType: effectiveType,
+        documentSide: side,
+        documentDetectedInFrame: true,
+        profile: profilePayload
       });
 
       if (!response.ok) {
@@ -2302,12 +2342,41 @@ function readImageFile(file: File): Promise<string> {
   });
 }
 
+// Upper bound so a stalled request (dead proxy, half-open socket, lost response) can never
+// leave the UI stuck on "Analyzing..." forever. Exceeds a normal n8n round trip (~20-40s)
+// plus one backend retry.
+const ANALYZE_REQUEST_TIMEOUT_MS = 100000;
+
+async function postAnalyzeRequest(url: string, payload: unknown): Promise<Response> {
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(ANALYZE_REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new Error("Verification is taking longer than usual. Please check your connection and try again.");
+    }
+    throw error;
+  }
+}
+
+// Prerequisite onboarding quiz/form link. Replace with the real URL (Google Form, Typeform, etc.).
+const PREREQUISITE_QUIZ_URL = "https://forms.gle/REPLACE_WITH_YOUR_QUIZ_LINK";
+
 function W2DocumentationIntroScreen({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const steps = [
     "Complete document validation",
     "Confirm your profile information",
     "Submit required forms and complete document verification"
   ];
+
+  // Prerequisite quiz gate. Because the quiz is hosted externally, the app cannot detect
+  // completion, so we require the pro to open it and self-attest before unlocking the CTA.
+  const [quizOpened, setQuizOpened] = useState(false);
+  const [quizAcknowledged, setQuizAcknowledged] = useState(false);
 
   return (
     <section className="w2-doc-intro-screen">
@@ -2331,9 +2400,33 @@ function W2DocumentationIntroScreen({ onNext, onBack }: { onNext: () => void; on
             </li>
           ))}
         </ol>
+
+        <div className="w2-prereq" aria-label="Required prerequisite quiz">
+          <h2>Required before you start</h2>
+          <p>Complete the short onboarding quiz. You must finish it to continue.</p>
+          <a
+            className="w2-prereq-link"
+            href={PREREQUISITE_QUIZ_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setQuizOpened(true)}
+          >
+            Open the required quiz ↗
+          </a>
+          <label className={`w2-prereq-ack ${quizOpened ? "" : "is-disabled"}`}>
+            <input
+              type="checkbox"
+              checked={quizAcknowledged}
+              disabled={!quizOpened}
+              onChange={(event) => setQuizAcknowledged(event.target.checked)}
+            />
+            <span>I have completed the required quiz.</span>
+          </label>
+          {!quizOpened && <p className="w2-prereq-hint">Open the quiz first to enable this.</p>}
+        </div>
       </div>
       <div className="w2-doc-intro-footer">
-        <button className="blue-cta" onClick={onNext}>Get started</button>
+        <button className="blue-cta" onClick={onNext} disabled={!quizAcknowledged}>Get started</button>
       </div>
     </section>
   );
@@ -2978,7 +3071,7 @@ function toDateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function LocationScreen({
+export function LocationScreen({
   address,
   onChange,
   onNext,
@@ -2989,15 +3082,30 @@ function LocationScreen({
   onNext: () => void;
   onBack: () => void;
 }) {
-  const [selectedCity, setSelectedCity] = useState(getCityFromAddress(address) || "San Francisco");
+  const initialSuggestion = getSuggestionForAddress(address);
+  const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number }>(
+    initialSuggestion?.lat != null && initialSuggestion?.lon != null
+      ? { lat: initialSuggestion.lat, lon: initialSuggestion.lon }
+      : DEFAULT_MAP_CENTER
+  );
+  const [selectedCity, setSelectedCity] = useState(initialSuggestion?.city || "San Francisco");
   const [remoteSuggestions, setRemoteSuggestions] = useState<AddressSuggestion[]>([]);
   const [isAddressLoading, setIsAddressLoading] = useState(false);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [selectedAddress, setSelectedAddress] = useState(address);
   const normalizedQuery = address.trim().toLowerCase();
   const localSuggestions = normalizedQuery.length >= 2 ? filterLocalAddressSuggestions(normalizedQuery) : [];
   const suggestions = mergeAddressSuggestions(remoteSuggestions, localSuggestions).slice(0, 5);
+  const trimmedAddress = address.trim();
+  const matchesSuggestion = suggestions.some((suggestion) => suggestion.address === address);
+  const canUseTypedAddress = trimmedAddress.length >= 6 && !matchesSuggestion;
+  const hasSelectedAddress =
+    Boolean(address) && (selectedAddress === address || trimmedAddress.length >= 8);
+  const showSuggestions =
+    suggestionsOpen && (suggestions.length > 0 || isAddressLoading || canUseTypedAddress);
 
   useEffect(() => {
-    if (normalizedQuery.length < 3 || address === ADDRESS_SUGGESTIONS.find((suggestion) => suggestion.address === address)?.address) {
+    if (normalizedQuery.length < 3) {
       setRemoteSuggestions([]);
       setIsAddressLoading(false);
       return undefined;
@@ -3024,60 +3132,159 @@ function LocationScreen({
 
   function selectAddress(suggestion: AddressSuggestion) {
     onChange(suggestion.address);
+    setSelectedAddress(suggestion.address);
     setSelectedCity(suggestion.city);
+    if (suggestion.lat != null && suggestion.lon != null) {
+      setMapCenter({ lat: suggestion.lat, lon: suggestion.lon });
+    }
     setRemoteSuggestions([]);
+    setSuggestionsOpen(false);
+  }
+
+  function clearAddress() {
+    onChange("");
+    setSelectedAddress("");
+    setRemoteSuggestions([]);
+    setSuggestionsOpen(false);
+  }
+
+  function useTypedAddress() {
+    setSelectedAddress(address);
+    setSuggestionsOpen(false);
   }
 
   return (
-    <section className="native-screen">
+    <section className="native-screen location-screen">
       <BackButton onClick={onBack} />
       <h1>Where do you live?</h1>
-      <p className="native-copy">We’ll find work opportunities near and around you.</p>
+      <p className="native-copy">We’ll use this to find work opportunities near you.</p>
       <div className="address-autocomplete">
-        <label className="plain-field">
-          Address
+        <div className={`address-field${showSuggestions ? " is-open" : ""}`}>
+          <span className="address-field-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" />
+              <circle cx="12" cy="10" r="2.5" />
+            </svg>
+          </span>
+          <label className="address-field-label" htmlFor="residential-address">Residential address</label>
           <input
-            aria-label="Address"
+            id="residential-address"
+            aria-label="Search residential address"
+            placeholder="Start typing your street address"
             value={address}
             autoComplete="off"
+            onFocus={() => setSuggestionsOpen(true)}
             onChange={(event) => {
               onChange(event.target.value);
-              setSelectedCity(getCityFromAddress(event.target.value) || "San Francisco");
+              setSelectedAddress("");
+              setSuggestionsOpen(true);
             }}
           />
-        </label>
-        {(suggestions.length > 0 || isAddressLoading) && (
+        </div>
+        {showSuggestions && (
           <div className="address-suggestions" role="listbox" aria-label="Address suggestions">
-            {isAddressLoading && <div className="address-loading">Searching addresses...</div>}
-            {suggestions.map((suggestion) => (
+            <div className="address-suggestions-header">
+              <span>Suggestions</span>
+              <button type="button" className="address-suggestions-close" aria-label="Close suggestions" onClick={clearAddress}>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </div>
+            {isAddressLoading && suggestions.length === 0 && <div className="address-loading">Searching addresses...</div>}
+            {suggestions.map((suggestion) => {
+              const [matched, rest] = splitAddressMatch(suggestion.address, normalizedQuery);
+              return (
+                <button
+                  type="button"
+                  role="option"
+                  aria-label={suggestion.address}
+                  aria-selected={address === suggestion.address}
+                  className="address-suggestion-row"
+                  key={suggestion.address}
+                  onClick={() => selectAddress(suggestion)}
+                >
+                  <strong>{matched}</strong>
+                  <span>{rest}</span>
+                </button>
+              );
+            })}
+            {!isAddressLoading && suggestions.length === 0 && (
+              <p className="address-empty">No exact match — you can enter it manually below.</p>
+            )}
+            {canUseTypedAddress && (
               <button
                 type="button"
-                role="option"
-                aria-label={suggestion.address}
-                aria-selected={address === suggestion.address}
-                key={suggestion.address}
-                onClick={() => selectAddress(suggestion)}
+                className="address-use-typed"
+                onClick={useTypedAddress}
               >
-                <strong>{suggestion.address.split(",")[0]}</strong>
-                <span>{suggestion.address.split(",").slice(1).join(",").trim()}</span>
+                <span className="address-use-typed-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                </span>
+                <span className="address-use-typed-text">
+                  <strong>Use this address exactly as typed</strong>
+                  <span>Keep your apartment, unit, or lane details</span>
+                </span>
               </button>
-            ))}
+            )}
           </div>
         )}
       </div>
+      <aside className="location-address-note" role="note" aria-label="Address consistency reminder">
+        <span className="location-note-icon" aria-hidden="true">i</span>
+        <p>
+          <strong>Address consistency</strong>
+          Enter your current U.S. residential address. It must be identical on your Form I-9 and
+          Form W-4 — exactly the same, down to the apartment, unit, suite, floor, or lane number.
+        </p>
+      </aside>
       <div className="map-preview">
-        <span className="map-pin">●</span>
-        <strong>{selectedCity}</strong>
-        <small> Maps&nbsp;&nbsp;Legal</small>
+        <iframe
+          key={`${mapCenter.lat},${mapCenter.lon}`}
+          className="map-frame"
+          title="Map of your address"
+          loading="lazy"
+          referrerPolicy="no-referrer-when-downgrade"
+          src={buildMapEmbedUrl(mapCenter.lat, mapCenter.lon)}
+        />
+        <div className="map-city-badge">{selectedCity}</div>
       </div>
-      <FooterButton onClick={onNext}>Next</FooterButton>
+      <FooterButton onClick={onNext} disabled={!hasSelectedAddress}>Next</FooterButton>
     </section>
   );
 }
 
-function getCityFromAddress(address: string) {
-  const matchedSuggestion = ADDRESS_SUGGESTIONS.find((suggestion) => suggestion.address === address);
-  return matchedSuggestion?.city;
+function buildMapEmbedUrl(lat: number, lon: number) {
+  const dLat = 0.028;
+  const dLon = 0.05;
+  const bbox = [lon - dLon, lat - dLat, lon + dLon, lat + dLat]
+    .map((value) => value.toFixed(6))
+    .join(",");
+  const params = new URLSearchParams({ bbox, layer: "mapnik", marker: `${lat},${lon}` });
+  return `https://www.openstreetmap.org/export/embed.html?${params.toString()}`;
+}
+
+function getSuggestionForAddress(address: string) {
+  return ADDRESS_SUGGESTIONS.find((suggestion) => suggestion.address === address);
+}
+
+function splitAddressMatch(address: string, normalizedQuery: string): [string, string] {
+  const [head, ...tail] = address.split(",");
+  const fallback: [string, string] = [head, tail.length ? `,${tail.join(",")}` : ""];
+  if (!normalizedQuery) {
+    return fallback;
+  }
+  const index = address.toLowerCase().indexOf(normalizedQuery);
+  if (index === -1) {
+    return fallback;
+  }
+  const matched = address.slice(0, index + normalizedQuery.length);
+  const rest = address.slice(index + normalizedQuery.length);
+  return [matched, rest];
 }
 
 function filterLocalAddressSuggestions(normalizedQuery: string) {
@@ -3100,13 +3307,19 @@ async function fetchAddressSuggestions(query: string, signal: AbortSignal): Prom
     return [];
   }
 
-  const response = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=5`, { signal });
+  // Request extra results and a US map bias, then hard-filter to US only below,
+  // because I-9 residential addresses must be within the United States.
+  const response = await fetch(
+    `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=15&lang=en&lat=39.8283&lon=-98.5795`,
+    { signal }
+  );
   if (!response.ok) {
     return [];
   }
 
   const data = (await response.json()) as {
     features?: Array<{
+      geometry?: { coordinates?: [number, number] };
       properties?: {
         name?: string;
         street?: string;
@@ -3114,23 +3327,38 @@ async function fetchAddressSuggestions(query: string, signal: AbortSignal): Prom
         city?: string;
         state?: string;
         country?: string;
+        countrycode?: string;
       };
     }>;
   };
 
   return (data.features || [])
-    .map((feature) => formatPhotonSuggestion(feature.properties))
-    .filter((suggestion): suggestion is AddressSuggestion => Boolean(suggestion));
+    .filter((feature) => isUnitedStatesFeature(feature.properties))
+    .map((feature) => formatPhotonSuggestion(feature.properties, feature.geometry?.coordinates))
+    .filter((suggestion): suggestion is AddressSuggestion => Boolean(suggestion))
+    .slice(0, 5);
 }
 
-function formatPhotonSuggestion(properties?: {
-  name?: string;
-  street?: string;
-  housenumber?: string;
-  city?: string;
-  state?: string;
-  country?: string;
-}): AddressSuggestion | null {
+function isUnitedStatesFeature(properties?: { country?: string; countrycode?: string }) {
+  const code = (properties?.countrycode || "").toUpperCase();
+  if (code) {
+    return code === "US";
+  }
+  const country = (properties?.country || "").toLowerCase();
+  return country === "united states" || country === "united states of america" || country === "usa";
+}
+
+function formatPhotonSuggestion(
+  properties?: {
+    name?: string;
+    street?: string;
+    housenumber?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+  },
+  coordinates?: [number, number]
+): AddressSuggestion | null {
   if (!properties?.name) {
     return null;
   }
@@ -3139,7 +3367,10 @@ function formatPhotonSuggestion(properties?: {
   const parts = [properties.name, street, properties.city, properties.state, properties.country].filter(Boolean);
   return {
     address: parts.join(", "),
-    city: properties.city || properties.name
+    city: properties.city || properties.name,
+    // Photon returns GeoJSON coordinates as [longitude, latitude]
+    lon: coordinates?.[0],
+    lat: coordinates?.[1]
   };
 }
 
@@ -4360,24 +4591,20 @@ function I9DocumentUpload({
     updateDocImage(imageKey, { imageBase64, fileName, status: "analyzing", message: "", analysis: null });
 
     try {
-      const response = await fetch("/api/i9/verify-document", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          requestId: `i9_${imageKey}_${Date.now()}`,
-          imageBase64,
-          selectedDocumentType: govType,
-          documentSide: side,
-          documentDetectedInFrame: true,
-          profile,
-          i9Context: {
-            citizenshipStatus: i9.citizenshipStatus,
-            documentPath: i9.documentPath,
-            expectedList: docEntry?.expectedList || "A",
-            expectedDocId: docEntry?.id || imageKey,
-            expectedDocLabel: docEntry?.label || ""
-          }
-        })
+      const response = await postAnalyzeRequest("/api/i9/verify-document", {
+        requestId: `i9_${imageKey}_${Date.now()}`,
+        imageBase64,
+        selectedDocumentType: govType,
+        documentSide: side,
+        documentDetectedInFrame: true,
+        profile,
+        i9Context: {
+          citizenshipStatus: i9.citizenshipStatus,
+          documentPath: i9.documentPath,
+          expectedList: docEntry?.expectedList || "A",
+          expectedDocId: docEntry?.id || imageKey,
+          expectedDocLabel: docEntry?.label || ""
+        }
       });
 
       if (!response.ok) {

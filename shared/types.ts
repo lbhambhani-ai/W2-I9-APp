@@ -203,6 +203,8 @@ export type AuditUserSnapshot = {
   dateOfBirth?: string;
   email?: string;
   phone?: string;
+  /** Full residential address entered on the "Where do you live?" screen. */
+  residentialAddress?: string;
 };
 
 export type AuditAttemptEvent = {

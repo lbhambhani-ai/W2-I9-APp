@@ -2958,6 +2958,80 @@ button:disabled {
   font-size: 1.125rem;
 }
 
+.w2-prereq {
+  margin-top: 1.75rem;
+  padding: 1.25rem;
+  border: 0.0625rem solid #dfe3e6;
+  border-radius: 0.875rem;
+  background: #f7f9fb;
+}
+
+.w2-prereq h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 800;
+  color: #1f2937;
+}
+
+.w2-prereq > p {
+  margin: 0 0 1rem;
+  color: #4b5157;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.w2-prereq-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.75rem 1.125rem;
+  border: 0.0625rem solid #2f6bff;
+  border-radius: 0.625rem;
+  color: #2f6bff;
+  font-weight: 700;
+  font-size: 1rem;
+  text-decoration: none;
+}
+
+.w2-prereq-link:hover {
+  background: rgba(47, 107, 255, 0.06);
+}
+
+.w2-prereq-ack {
+  display: flex;
+  gap: 0.625rem;
+  align-items: flex-start;
+  margin-top: 1rem;
+  color: #33373a;
+  font-size: 1rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.w2-prereq-ack input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.0625rem;
+  flex: 0 0 auto;
+  accent-color: #2f6bff;
+  cursor: pointer;
+}
+
+.w2-prereq-ack.is-disabled {
+  color: #9aa1a5;
+  cursor: not-allowed;
+}
+
+.w2-prereq-ack.is-disabled input {
+  cursor: not-allowed;
+}
+
+.w2-prereq-hint {
+  margin: 0.5rem 0 0;
+  color: #9aa1a5;
+  font-size: 0.875rem;
+}
+
 .w2-doc-intro-footer {
   flex: 0 0 auto;
   padding: 1.25rem 1.75rem 1.625rem;
@@ -3355,117 +3429,340 @@ button:disabled {
   z-index: 5;
 }
 
+.location-screen {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding-bottom: 0;
+  overflow-y: auto;
+  background: #fff;
+}
+
+.location-screen h1 {
+  margin-bottom: 0.5rem;
+}
+
+.location-screen > .native-copy {
+  margin: 0 0 1.25rem;
+  color: #5b6470;
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+
+.address-field {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.75rem;
+  min-height: 4rem;
+  padding: 0.625rem 0.875rem;
+  border: 0.0625rem solid #c9d0d8;
+  border-radius: 0.75rem;
+  background: #fff;
+  box-shadow: 0 0.0625rem 0.125rem rgba(23, 33, 45, 0.04);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.address-field:focus-within,
+.address-field.is-open {
+  border-color: #4b78f5;
+  box-shadow: 0 0 0 0.1875rem rgba(75, 120, 245, 0.13);
+}
+
+.address-field-label {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  color: #68727e;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.address-field input {
+  grid-column: 2;
+  grid-row: 2;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+  font-size: 0.9375rem;
+  color: #17212d;
+  background: transparent;
+  outline: none;
+}
+
+.address-field input::placeholder {
+  color: #9aa2ac;
+}
+
+.address-field-icon {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  color: #4b78f5;
+}
+
 .address-suggestions {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(100% + 0.5rem);
   overflow: hidden;
-  border: 0.0625rem solid #d8dee8;
-  border-radius: 1rem;
+  border: 0.0625rem solid #e4e8ee;
+  max-height: min(18rem, 42dvh);
+  border-radius: 0.75rem;
   background: #fff;
-  box-shadow: 0 1.125rem 2.5rem rgba(23, 33, 45, 0.14);
+  box-shadow: 0 0.875rem 2rem rgba(23, 33, 45, 0.16);
+  overflow-y: auto;
+  z-index: 10;
 }
 
-.address-suggestions button {
-  width: 100%;
+.address-suggestions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.875rem 0.375rem;
+  color: #8b939c;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.address-suggestions-close {
   display: grid;
-  gap: 0.25rem;
-  padding: 0.8125rem 0.875rem;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 62.4375rem;
+  background: transparent;
+  color: #17212d;
+  cursor: pointer;
+}
+
+.address-suggestions-close:hover {
+  background: #f1f3f6;
+}
+
+.address-suggestion-row {
+  width: 100%;
+  display: block;
+  padding: 0.6875rem 0.875rem;
   border: 0;
   border-radius: 0;
-  border-bottom: 0.0625rem solid #edf0f4;
   background: #fff;
-  color: #2a3036;
+  color: #17212d;
   text-align: left;
+  font-size: 0.875rem;
+  line-height: 1.35;
+  cursor: pointer;
 }
 
-.address-suggestions button:last-child {
-  border-bottom: 0;
-}
-
-.address-suggestions button:hover,
-.address-suggestions button[aria-selected="true"] {
+.address-suggestion-row:hover,
+.address-suggestion-row[aria-selected="true"] {
   background: #eef3ff;
+  color: #17212d;
 }
 
-.address-suggestions strong {
-  font-size: 0.9375rem;
+.address-suggestion-row strong {
+  font-weight: 700;
 }
 
-.address-suggestions span {
-  color: #66707a;
-  font-size: 0.8125rem;
+.address-suggestion-row span {
+  color: #8b939c;
+}
+
+.address-suggestion-row:hover span,
+.address-suggestion-row[aria-selected="true"] span {
+  color: #68727e;
 }
 
 .address-loading {
-  padding: 0.75rem 0.875rem;
+  padding: 0.75rem 1rem 1rem;
   color: #66707a;
   font-size: 0.8125rem;
 }
 
+.address-empty {
+  margin: 0;
+  padding: 0.625rem 0.875rem 0.5rem;
+  color: #66707a;
+  font-size: 0.8125rem;
+}
+
+.address-use-typed {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.75rem 0.875rem;
+  border: 0;
+  border-top: 1px solid #edf0f4;
+  background: #fff;
+  color: #2c6bed;
+  text-align: left;
+  cursor: pointer;
+}
+
+.address-use-typed:hover {
+  background: #eef3ff;
+}
+
+.address-use-typed-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eaf1ff;
+  color: #2c6bed;
+}
+
+.address-use-typed-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.address-use-typed-text strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #2c6bed;
+}
+
+.address-use-typed-text span {
+  font-size: 0.75rem;
+  color: #8b939c;
+}
+
 .map-preview {
-  height: 22.25rem;
-  margin: 2.25rem -1.75rem 0;
+  flex: 0 0 clamp(12rem, 30dvh, 17rem);
+  min-height: 12rem;
+  margin: 1rem 0 1.25rem;
   position: relative;
   overflow: hidden;
-  background:
-    linear-gradient(120deg, transparent 0 36%, rgba(255, 255, 255, 0.8) 37% 39%, transparent 40%),
-    linear-gradient(170deg, #89d8ee 0 45%, #f5f1db 46% 61%, #b9d9bd 62% 100%);
+  border: 0.0625rem solid #dfe4ea;
+  border-radius: 0.875rem;
+  background: #e8eef3;
 }
 
-.map-preview::before,
-.map-preview::after {
-  content: "";
+.map-frame {
   position: absolute;
-  background: rgba(118, 122, 127, 0.48);
-  border-radius: 62.4375rem;
-}
-
-.map-preview::before {
-  width: 0.25rem;
-  height: 19.375rem;
-  left: 54%;
-  top: 1.75rem;
-  transform: rotate(25deg);
-}
-
-.map-preview::after {
-  width: 26.25rem;
-  height: 0.25rem;
   left: 0;
-  top: 11.5625rem;
-  transform: rotate(-6deg);
+  top: -0.5rem;
+  width: 100%;
+  /* Oversize + clip the bottom so the OpenStreetMap embed attribution bar
+     is cropped out by the .map-preview overflow: hidden. */
+  height: calc(100% + 2.75rem);
+  border: 0;
 }
 
-.map-preview strong {
-  position: absolute;
-  left: 1.875rem;
-  top: 12.375rem;
-  font-size: 2.375rem;
-  letter-spacing: -0.04em;
+.location-address-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin-top: 0.875rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.75rem;
+  background: #f4f7ff;
+  color: #4e5968;
 }
 
-.map-preview small {
-  position: absolute;
-  left: 0.875rem;
-  bottom: 0.5rem;
-  color: #5f6368;
+.location-address-note p {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
-.map-pin {
-  width: 2.125rem;
-  height: 2.125rem;
+.location-address-note strong {
+  display: block;
+  margin-bottom: 0.125rem;
+  color: #263244;
+  font-size: 0.8125rem;
+}
+
+.location-note-icon {
   display: grid;
+  flex: 0 0 1.125rem;
+  width: 1.125rem;
+  height: 1.125rem;
   place-items: center;
-  position: absolute;
-  left: 47%;
-  top: 9.125rem;
-  border: 0.1875rem solid #fff;
-  border-radius: 62.4375rem;
-  background: #e93e73;
+  margin-top: 0.0625rem;
+  border-radius: 50%;
+  background: #4b78f5;
   color: #fff;
-  z-index: 2;
+  font-size: 0.6875rem;
+  font-weight: 800;
+}
+
+.map-city-badge {
+  position: absolute;
+  left: 1.125rem;
+  bottom: 1.125rem;
+  padding: 0.4375rem 0.875rem;
+  border-radius: 62.4375rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0.375rem 1rem rgba(23, 33, 45, 0.18);
+  color: #17212d;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.location-screen .native-footer {
+  position: sticky;
+  z-index: 8;
+  left: auto;
+  right: auto;
+  bottom: 0;
+  flex: 0 0 auto;
+  margin: auto -1.75rem 0;
+  padding: 0.875rem 1.75rem calc(0.875rem + env(safe-area-inset-bottom, 0));
+  border-top: 0.0625rem solid #eef1f4;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 -0.25rem 1rem rgba(23, 33, 45, 0.06);
+  backdrop-filter: blur(0.75rem);
+}
+
+.location-screen .blue-cta {
+  min-height: 3rem;
+  border-radius: 0.625rem;
+}
+
+@media (max-width: 23rem) {
+  .location-screen {
+    padding-inline: 1rem;
+  }
+
+  .location-screen .native-footer {
+    margin-inline: -1rem;
+    padding-inline: 1rem;
+  }
+
+  .map-preview {
+    flex-basis: 11rem;
+    min-height: 11rem;
+  }
+}
+
+@media (min-width: 48rem) {
+  .location-screen > :not(.native-footer) {
+    width: 100%;
+  }
+
+  .address-field {
+    min-height: 4.25rem;
+  }
 }
 
 .chips {
