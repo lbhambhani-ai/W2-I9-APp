@@ -23,6 +23,36 @@ import { s3FileUrlFromKey } from "../shared/audit";
 // this bounds a stalled/half-open socket so the backend always responds to the client.
 const N8N_FETCH_TIMEOUT_MS = 60000;
 
+// Robust body reader for n8n webhook responses. `await response.json()` throws an opaque
+// "Unexpected end of JSON input" whenever n8n returns an empty body (workspace restart,
+// Cloudflare error page, gateway timeout). This helper preserves the HTTP status + a
+// snippet of the raw body in the thrown Error so retries and logs are actionable.
+async function parseN8nJsonResponse(
+  response: Response,
+  label: string
+): Promise<Record<string, unknown>> {
+  // Prefer reading the raw text so empty / HTML error bodies (workspace restarts, gateway
+  // error pages) surface with an actionable message. Fall back to .json() for runtimes or
+  // test mocks that expose json() but not text().
+  if (typeof response.text === "function") {
+    const raw = await response.text();
+    if (!raw || raw.trim().length === 0) {
+      throw new Error(`${label} returned empty body (status=${response.status})`);
+    }
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      const snippet = raw.slice(0, 200).replace(/\s+/g, " ");
+      throw new Error(`${label} returned non-JSON body (status=${response.status}): ${snippet}`);
+    }
+  }
+  const data = (await response.json()) as Record<string, unknown> | null;
+  if (!data) {
+    throw new Error(`${label} returned empty body (status=${response.status})`);
+  }
+  return data;
+}
+
 function normalizeFieldComparison(val: unknown): IdentityFieldComparison {
   const validStatuses = ["MATCH", "MISMATCH", "PARTIAL_MATCH", "AMBIGUOUS", "NOT_CHECKED"] as const;
   type ValidStatus = (typeof validStatuses)[number];
@@ -322,10 +352,13 @@ export function createServer() {
           throw new Error(`n8n returned ${verifierResponse.status}`);
         }
 
-        const body = (await verifierResponse.json()) as IdentityVerificationAnalyzeResponse;
+        const body = (await parseN8nJsonResponse(
+          verifierResponse,
+          "n8n identity webhook"
+        )) as unknown as IdentityVerificationAnalyzeResponse;
 
         if (!body || !body.analysis) {
-          throw new Error("n8n returned empty or invalid response");
+          throw new Error("n8n returned response without analysis field");
         }
 
         console.log(`[n8n] Success on attempt ${attempt} for ${input.requestId}`);
@@ -433,9 +466,9 @@ export function createServer() {
           throw new Error(`n8n returned ${n8nResponse.status}`);
         }
 
-        const result = (await n8nResponse.json()) as Record<string, unknown>;
+        const result = await parseN8nJsonResponse(n8nResponse, "n8n i9 webhook");
         if (!result || !result.analysis) {
-          throw new Error("n8n returned empty or invalid response");
+          throw new Error("n8n returned response without analysis field");
         }
 
         console.log(`[i9-n8n] Success on attempt ${attempt} for ${body.requestId}`);
@@ -583,6 +616,31 @@ export function createServer() {
       response.sendFile(join(clientDistPath, "index.html"));
     });
   }
+
+  // Central error handler. Mobile clients drop the connection mid-upload constantly
+  // (20MB base64 I-9 images + flaky networks), so body-parser throws
+  // `BadRequestError: request aborted` frequently. Log it as a single info line
+  // instead of the default 10-frame stack dump, and short-circuit the response
+  // since the client is already gone.
+  app.use((
+    error: Error & { type?: string; status?: number; statusCode?: number },
+    request: express.Request,
+    response: express.Response,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    _next: express.NextFunction
+  ) => {
+    const isClientAbort =
+      error?.type === "request.aborted" ||
+      /request aborted/i.test(error?.message || "");
+    if (isClientAbort) {
+      console.log(`[client] request aborted before body received: ${request.method} ${request.originalUrl}`);
+      if (!response.headersSent) response.status(400).end();
+      return;
+    }
+    const status = error?.status || error?.statusCode || 500;
+    console.error(`[server] ${request.method} ${request.originalUrl} -> ${status}: ${error?.message || "unknown error"}`);
+    if (!response.headersSent) response.status(status).json({ error: error?.message || "Internal server error" });
+  });
 
   return app;
 }

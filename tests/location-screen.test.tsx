@@ -118,6 +118,30 @@ describe("location screen", () => {
     expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
   });
 
+  it("always opens the panel with guidance once typing, even when the geocoder returns nothing", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ features: [] }) })
+    );
+
+    function Harness() {
+      const [address, setAddress] = useState("");
+      return (
+        <LocationScreen address={address} onChange={setAddress} onNext={vi.fn()} onBack={vi.fn()} />
+      );
+    }
+
+    render(<Harness />);
+    await user.type(screen.getByRole("textbox", { name: "Search residential address" }), "Hey");
+
+    // The panel must appear (not stay hidden) and give the user a next step.
+    await waitFor(() => {
+      expect(screen.getByRole("listbox", { name: "Address suggestions" })).toBeVisible();
+    });
+    expect(await screen.findByText(/keep typing your full street address/i)).toBeVisible();
+  });
+
   it("shows the complete I-9 and W-4 address guidance", () => {
     render(<LocationScreen address="" onChange={vi.fn()} onNext={vi.fn()} onBack={vi.fn()} />);
 

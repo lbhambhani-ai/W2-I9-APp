@@ -8,22 +8,28 @@
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "audit-webhook-001",
+      "id": "50ea0754-f5e2-4076-a9c8-f33db699032d",
       "name": "Audit Log Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [300, 300],
+      "position": [
+        -112,
+        528
+      ],
       "webhookId": "audit-log"
     },
     {
       "parameters": {
         "jsCode": "// Reject requests whose secret header does not match AUDIT_LOG_WEBHOOK_SECRET.\n// Fail-open only when no secret is configured in n8n (Variables or env), so the\n// workflow keeps working until you set the secret, then enforces it.\nconst headers = $json.headers || {};\nconst provided = headers['x-instawork-audit-secret'] || headers['X-Instawork-Audit-Secret'] || '';\nlet expected = '';\ntry { if (typeof $vars !== 'undefined' && $vars && $vars.AUDIT_LOG_WEBHOOK_SECRET) expected = $vars.AUDIT_LOG_WEBHOOK_SECRET; } catch (e) {}\ntry { if (!expected && typeof $env !== 'undefined' && $env && $env.AUDIT_LOG_WEBHOOK_SECRET) expected = $env.AUDIT_LOG_WEBHOOK_SECRET; } catch (e) {}\nconst authorized = !expected || provided === expected;\nreturn [{ json: { authorized: authorized, body: $json.body } }];"
       },
-      "id": "audit-check-secret-001",
+      "id": "28a19c80-9e07-4ac9-8088-7658a3adf48a",
       "name": "Check Secret",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [520, 300]
+      "position": [
+        112,
+        528
+      ]
     },
     {
       "parameters": {
@@ -49,21 +55,27 @@
         },
         "options": {}
       },
-      "id": "audit-authorized-001",
+      "id": "171ca99c-9c61-4ad2-8bb0-64854922cc7e",
       "name": "Authorized?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [740, 300]
+      "position": [
+        336,
+        528
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// Normalize one inbound audit event into a single, consistent sheet row.\n// One row per event, same 17 columns every time, so the sheet stays clean.\n// PII policy: only Name + Email + residential Address are stored. File references point at AWS S3.\nconst event = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst NL = String.fromCharCode(10);\nconst FRIENDLY_EVENT = { attempt: 'Document Attempt', summary: 'Submission Summary', session_start: 'Session Started', flow_complete: 'Flow Completed', app_redirect_click: 'Opened App' };\nconst profile = event.profile || {};\nconst fullName = ([profile.legalFirstName || profile.firstName, profile.legalLastName || profile.lastName].filter(Boolean).join(' ').trim()) || event.intercomName || '';\nconst email = profile.email || event.intercomEmail || '';\nfunction flagText(flags) { if (!Array.isArray(flags) || !flags.length) return ''; return flags.map(function (f) { return f && f.code ? (f.code + ': ' + (f.message || '')).trim() : String(f); }).join(' | '); }\nlet flow = '', attemptNo = '', result = '', documentInfo = '', fileName = '', awsLocation = '', awsUrl = '', immigration = '', details = '';\nconst kind = event.recordKind || '';\nif (kind === 'attempt') { flow = event.flow || ''; attemptNo = event.attemptNumber || ''; result = event.resultStatus || ''; documentInfo = event.selectedDocumentLabel || event.selectedDocumentType || ''; fileName = event.fileName || ''; awsLocation = event.s3FileKey || ''; awsUrl = event.s3FileUrl || ''; immigration = event.immigrationStatus || ''; details = [event.userMessage, flagText(event.flags)].filter(Boolean).join(' - '); }\nelse if (kind === 'summary') { const id = event.identity || {}; const i9 = event.i9 || {}; result = 'ID: ' + (id.finalStatus || 'n/a') + ' | I-9: ' + (i9.finalStatus || 'n/a'); documentInfo = (i9.selectedDocuments || []).join(', '); immigration = i9.citizenshipStatus || ''; const files = [].concat(id.fileLinks || [], i9.fileLinks || []); const fb = event.feedback || {}; details = [fb.rating ? ('Rating ' + fb.rating + '/5') : '', fb.comments || '', 'ID attempts: ' + (id.attemptCount || 0) + ', I-9 attempts: ' + (i9.attemptCount || 0), files.length ? ('Files:' + NL + files.join(NL)) : ''].filter(Boolean).join(NL); }\nelse if (kind === 'session_start') { details = event.landingUrl ? ('Landing: ' + event.landingUrl) : ''; }\nelse if (kind === 'flow_complete') { result = 'complete'; details = [event.feedbackRating ? ('Rating ' + event.feedbackRating + '/5') : '', event.feedbackComments || ''].filter(Boolean).join(' - '); }\nelse if (kind === 'app_redirect_click') { result = event.context || ''; details = event.deepLink ? ('Deep link: ' + event.deepLink) : ''; }\nconst row = { 'Timestamp': event.timestamp || new Date().toISOString(), 'Event': FRIENDLY_EVENT[kind] || kind || 'Unknown', 'Session ID': event.sessionId || '', 'Name': fullName, 'Email': email, 'Flow': flow, 'Attempt #': attemptNo, 'Result': result, 'Document': documentInfo, 'File Name': fileName, 'AWS File Location': awsLocation, 'AWS File URL': awsUrl, 'Immigration Status': immigration, 'Details': details, 'Address': profile.residentialAddress || '', 'Intercom User ID': event.intercomUserId || '', 'Intercom Ticket ID': event.intercomConversationId || '' };\nreturn [{ json: row }];"
+        "jsCode": "// Normalize one inbound audit event into a single, consistent sheet row.\n// One row per event, same 17 columns every time, so the sheet stays clean.\n// PII policy: only Name + Email are stored. File references point at AWS S3.\nconst event = ($json.body && typeof $json.body === 'object') ? $json.body : $json;\nconst NL = String.fromCharCode(10);\nconst FRIENDLY_EVENT = { attempt: 'Document Attempt', summary: 'Submission Summary', session_start: 'Session Started', flow_complete: 'Flow Completed', app_redirect_click: 'Opened App' };\nconst profile = event.profile || {};\nconst fullName = ([profile.legalFirstName || profile.firstName, profile.legalLastName || profile.lastName].filter(Boolean).join(' ').trim()) || event.intercomName || '';\nconst email = profile.email || event.intercomEmail || '';\nconst address = profile.residentialAddress || event.residentialAddress || '';\nfunction flagText(flags) { if (!Array.isArray(flags) || !flags.length) return ''; return flags.map(function (f) { return f && f.code ? (f.code + ': ' + (f.message || '')).trim() : String(f); }).join(' | '); }\nlet flow = '', attemptNo = '', result = '', documentInfo = '', fileName = '', awsLocation = '', awsUrl = '', immigration = '', details = '';\nconst kind = event.recordKind || '';\nif (kind === 'attempt') { flow = event.flow || ''; attemptNo = event.attemptNumber || ''; result = event.resultStatus || ''; documentInfo = event.selectedDocumentLabel || event.selectedDocumentType || ''; fileName = event.fileName || ''; awsLocation = event.s3FileKey || ''; awsUrl = event.s3FileUrl || ''; immigration = event.immigrationStatus || ''; details = [event.userMessage, flagText(event.flags)].filter(Boolean).join(' - '); }\nelse if (kind === 'summary') { const id = event.identity || {}; const i9 = event.i9 || {}; result = 'ID: ' + (id.finalStatus || 'n/a') + ' | I-9: ' + (i9.finalStatus || 'n/a'); documentInfo = (i9.selectedDocuments || []).join(', '); immigration = i9.citizenshipStatus || ''; const files = [].concat(id.fileLinks || [], i9.fileLinks || []); const fb = event.feedback || {}; details = [fb.rating ? ('Rating ' + fb.rating + '/5') : '', fb.comments || '', 'ID attempts: ' + (id.attemptCount || 0) + ', I-9 attempts: ' + (i9.attemptCount || 0), files.length ? ('Files:' + NL + files.join(NL)) : ''].filter(Boolean).join(NL); }\nelse if (kind === 'session_start') { details = event.landingUrl ? ('Landing: ' + event.landingUrl) : ''; }\nelse if (kind === 'flow_complete') { result = 'complete'; details = [event.feedbackRating ? ('Rating ' + event.feedbackRating + '/5') : '', event.feedbackComments || ''].filter(Boolean).join(' - '); }\nelse if (kind === 'app_redirect_click') { result = event.context || ''; details = event.deepLink ? ('Deep link: ' + event.deepLink) : ''; }\nconst row = { 'Timestamp': event.timestamp || new Date().toISOString(), 'Event': FRIENDLY_EVENT[kind] || kind || 'Unknown', 'Session ID': event.sessionId || '', 'Name': fullName, 'Email': email, 'Flow': flow, 'Attempt #': attemptNo, 'Result': result, 'Document': documentInfo, 'File Name': fileName, 'AWS File Location': awsLocation, 'AWS File URL': awsUrl, 'Immigration Status': immigration, 'Details': details, 'Address': address, 'Intercom User ID': event.intercomUserId || '', 'Intercom Ticket ID': event.intercomConversationId || '' };\nreturn [{ json: row }];"
       },
-      "id": "audit-normalize-001",
+      "id": "7cb5f4ed-0d77-4e0e-8c78-f7bdb6934091",
       "name": "Normalize Audit Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 200]
+      "position": [
+        544,
+        416
+      ]
     },
     {
       "parameters": {
@@ -84,11 +96,14 @@
         },
         "options": {}
       },
-      "id": "audit-append-sheet-001",
+      "id": "8d930294-352f-441f-8628-92e9fd28506d",
       "name": "Append Audit Row To Google Sheets",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
-      "position": [1180, 200],
+      "position": [
+        768,
+        416
+      ],
       "credentials": {
         "googleSheetsOAuth2Api": {
           "id": "a58028CP6zWXvdeS",
@@ -104,11 +119,14 @@
           "responseCode": 200
         }
       },
-      "id": "audit-respond-001",
+      "id": "622365c5-8e4b-4c3d-96bc-5c9eadc003af",
       "name": "Respond Logged",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1400, 200]
+      "position": [
+        992,
+        416
+      ]
     },
     {
       "parameters": {
@@ -118,11 +136,14 @@
           "responseCode": 401
         }
       },
-      "id": "audit-respond-401-001",
+      "id": "573ee5eb-e422-41dc-9e5f-4714ace48c08",
       "name": "Respond Unauthorized",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [960, 420]
+      "position": [
+        544,
+        640
+      ]
     }
   ],
   "connections": {
@@ -190,7 +211,9 @@
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
   },
   "pinData": {},
   "versionId": "audit-log-google-sheets-v3-secure",

@@ -3101,8 +3101,10 @@ export function LocationScreen({
   const canUseTypedAddress = trimmedAddress.length >= 6 && !matchesSuggestion;
   const hasSelectedAddress =
     Boolean(address) && (selectedAddress === address || trimmedAddress.length >= 8);
-  const showSuggestions =
-    suggestionsOpen && (suggestions.length > 0 || isAddressLoading || canUseTypedAddress);
+  // Open the panel as soon as the user is typing a real query so the field is never
+  // silently unresponsive when the geocoder returns nothing — always show loading,
+  // matches, a "keep typing" hint, or the manual-entry option.
+  const showSuggestions = suggestionsOpen && normalizedQuery.length >= 3;
 
   useEffect(() => {
     if (normalizedQuery.length < 3) {
@@ -3111,9 +3113,11 @@ export function LocationScreen({
       return undefined;
     }
 
+    // Show the loading state immediately (before the debounce) so the panel gives
+    // instant feedback rather than briefly looking empty/dead while we wait.
+    setIsAddressLoading(true);
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(async () => {
-      setIsAddressLoading(true);
       try {
         const nextSuggestions = await fetchAddressSuggestions(address, abortController.signal);
         setRemoteSuggestions(nextSuggestions);
@@ -3211,7 +3215,11 @@ export function LocationScreen({
               );
             })}
             {!isAddressLoading && suggestions.length === 0 && (
-              <p className="address-empty">No exact match — you can enter it manually below.</p>
+              <p className="address-empty">
+                {canUseTypedAddress
+                  ? "No exact match — you can continue with the address you typed."
+                  : "Keep typing your full street address (house number, street, city) to see matches."}
+              </p>
             )}
             {canUseTypedAddress && (
               <button
@@ -3309,8 +3317,13 @@ async function fetchAddressSuggestions(query: string, signal: AbortSignal): Prom
 
   // Request extra results and a US map bias, then hard-filter to US only below,
   // because I-9 residential addresses must be within the United States.
+  // Restrict to address-like layers (house/street/locality/district/city) so we
+  // surface real residential addresses instead of unrelated business POIs.
+  const layerParams = ["house", "street", "locality", "district", "city"]
+    .map((layer) => `&layer=${layer}`)
+    .join("");
   const response = await fetch(
-    `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=15&lang=en&lat=39.8283&lon=-98.5795`,
+    `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=15&lang=en&lat=39.8283&lon=-98.5795${layerParams}`,
     { signal }
   );
   if (!response.ok) {
