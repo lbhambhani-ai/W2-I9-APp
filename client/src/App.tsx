@@ -2363,20 +2363,12 @@ async function postAnalyzeRequest(url: string, payload: unknown): Promise<Respon
   }
 }
 
-// Prerequisite onboarding quiz/form link. Replace with the real URL (Google Form, Typeform, etc.).
-const PREREQUISITE_QUIZ_URL = "https://forms.gle/REPLACE_WITH_YOUR_QUIZ_LINK";
-
 function W2DocumentationIntroScreen({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const steps = [
     "Complete document validation",
     "Confirm your profile information",
     "Submit required forms and complete document verification"
   ];
-
-  // Prerequisite quiz gate. Because the quiz is hosted externally, the app cannot detect
-  // completion, so we require the pro to open it and self-attest before unlocking the CTA.
-  const [quizOpened, setQuizOpened] = useState(false);
-  const [quizAcknowledged, setQuizAcknowledged] = useState(false);
 
   return (
     <section className="w2-doc-intro-screen">
@@ -2400,33 +2392,9 @@ function W2DocumentationIntroScreen({ onNext, onBack }: { onNext: () => void; on
             </li>
           ))}
         </ol>
-
-        <div className="w2-prereq" aria-label="Required prerequisite quiz">
-          <h2>Required before you start</h2>
-          <p>Complete the short onboarding quiz. You must finish it to continue.</p>
-          <a
-            className="w2-prereq-link"
-            href={PREREQUISITE_QUIZ_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={() => setQuizOpened(true)}
-          >
-            Open the required quiz ↗
-          </a>
-          <label className={`w2-prereq-ack ${quizOpened ? "" : "is-disabled"}`}>
-            <input
-              type="checkbox"
-              checked={quizAcknowledged}
-              disabled={!quizOpened}
-              onChange={(event) => setQuizAcknowledged(event.target.checked)}
-            />
-            <span>I have completed the required quiz.</span>
-          </label>
-          {!quizOpened && <p className="w2-prereq-hint">Open the quiz first to enable this.</p>}
-        </div>
       </div>
       <div className="w2-doc-intro-footer">
-        <button className="blue-cta" onClick={onNext} disabled={!quizAcknowledged}>Get started</button>
+        <button className="blue-cta" onClick={onNext}>Get started</button>
       </div>
     </section>
   );
